@@ -114,6 +114,23 @@ double responseDb(const Signal& ir, double sampleRate, double hz)
 }
 } // namespace
 
+TEST_CASE("Engine output gain: values within half a 0.1 dB step of 0 are exact unity", "[engine]")
+{
+    // Su macOS il default "0 dB" del parametro arriva come 3.6e-7 dB: deve restare trasparente bit per bit.
+    for (float gainDb : {0.0f, 3.6e-7f, -3.6e-7f, 0.049f, -0.049f})
+    {
+        DriftEngine e;
+        prepareEngine(e);
+        e.setSettings(makeSettings(2, 0.0f, 1.0f, 1.0f, 1.0f, gainDb));
+        auto l = sine(4096, 1000.0, kSr, 0.5f);
+        auto r = noise(4096, 7, 0.5f);
+        const auto l0 = l, r0 = r;
+        runStereo(e, l, r, 256);
+        CHECK(l == l0);
+        CHECK(r == r0);
+    }
+}
+
 TEST_CASE("Engine weights: per-side sum is 1 during every N change, final weights are exact", "[engine]")
 {
     DriftEngine e;
