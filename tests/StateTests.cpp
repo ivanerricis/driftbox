@@ -262,3 +262,63 @@ TEST_CASE("New instances do not all start with the same channel pair", "[state]"
     }
     CHECK(pairs.size() > 1);
 }
+
+namespace
+{
+// Come il wrapper CLAP applica un evento parametro in process(): setValue() senza notificare l'host, poi i
+// listener (l'APVTS li usa per aggiornare i suoi valori).
+void setLikeHostEvent(DriftboxAudioProcessor& p, const char* id, float value)
+{
+    auto* param = p.getAPVTS().getParameter(id);
+    const float normalised = param->convertTo0to1(value);
+    param->setValue(normalised);
+    param->sendValueChangedMessageToListeners(normalised);
+}
+
+class ChangeSpy final : public juce::AudioProcessorListener
+{
+public:
+    void audioProcessorParameterChanged(juce::AudioProcessor*, int, float) override {}
+    void audioProcessorChanged(juce::AudioProcessor*, const ChangeDetails& details) override
+    {
+        if (details.programChanged)
+        {
+            ++programChanges;
+        }
+    }
+    int programChanges = 0;
+};
+} // namespace
+
+TEST_CASE("State: values set like host events survive save and load in a new instance", "[state][clap]")
+{
+    DriftboxAudioProcessor a{DriftboxAudioProcessor::ChannelPair{1, 2}};
+    setLikeHostEvent(a, pid::chanL, 5.0f);
+    setLikeHostEvent(a, pid::chanR, 12.0f);
+    setLikeHostEvent(a, pid::drift, 0.77f);
+    setLikeHostEvent(a, pid::noise, 0.51f);
+    setLikeHostEvent(a, pid::outGain, -14.4f);
+    setLikeHostEvent(a, pid::bypass, 1.0f);
+
+    const auto first = saveState(a);
+    // Salvare due volte lo stesso stato dà gli stessi byte.
+    CHECK(saveState(a) == first);
+
+    DriftboxAudioProcessor b{DriftboxAudioProcessor::ChannelPair{40, 41}};
+    ChangeSpy spy;
+    b.addListener(&spy);
+    loadState(b, first);
+    b.removeListener(&spy);
+
+    for (const auto* id : {pid::chanL, pid::chanR, pid::drift, pid::freqTol, pid::phaseTol, pid::gainTol,
+                           pid::saturation, pid::noise, pid::outGain, pid::bypass})
+    {
+        INFO(id);
+        CHECK(b.getAPVTS().getParameter(id)->getValue() == Approx(a.getAPVTS().getParameter(id)->getValue()));
+    }
+    // L'host viene avvisato che i valori sono cambiati (CLAP: params.rescan(VALUES)).
+    CHECK(spy.programChanges >= 1);
+
+    // Un nuovo salvataggio dopo il ripristino riproduce gli stessi byte.
+    CHECK(saveState(b) == first);
+}

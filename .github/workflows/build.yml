@@ -155,8 +155,7 @@ jobs:
           killall -9 AudioComponentRegistrar || true
           auval -v aufx Drbx Ivnr
 
-      - name: clap-validator (advisory)
-        continue-on-error: true
+      - name: clap-validator
         shell: bash
         run: |
           validator="$(scripts/ci/get_clap_validator.sh "${{ matrix.tools_os }}")"

@@ -23,8 +23,8 @@ At Drift 0 % with Output at 0 dB the tolerance chain is an exact identity, so th
 
 | Parameter | ID | Range | Default | What it does |
 |---|---|---|---|---|
-| Channel L | `chanL` | 1 to 64 (integer) | 1 | Console channel applied to the left side. |
-| Channel R | `chanR` | 1 to 64 (integer) | 2 | Console channel applied to the right side. |
+| Channel L | `chanL` | 1 to 64 (integer) | random pair per new instance | Console channel applied to the left side. |
+| Channel R | `chanR` | 1 to 64 (integer) | random pair per new instance | Console channel applied to the right side. |
 | Drift Amount | `drift` | 0 to 100 % | 50 % | How far every channel strays from ideal. Scales all the weights below. |
 | Frequency Tolerance (Freq) | `freqTol` | 0 to 100 % | 50 % | Weight of the shelf and bell deviations. |
 | Phase Tolerance (Phase) | `phaseTol` | 0 to 100 % | 50 % | Weight of the tiny delay between channels. |

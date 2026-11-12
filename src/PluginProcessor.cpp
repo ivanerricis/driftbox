@@ -138,24 +138,22 @@ private:
     int depth_ = 0;
 };
 
-DriftboxAudioProcessor::DriftboxAudioProcessor()
+DriftboxAudioProcessor::DriftboxAudioProcessor() : DriftboxAudioProcessor(drawChannelPair(0, 0)) {}
+
+DriftboxAudioProcessor::DriftboxAudioProcessor(ChannelPair initialChannels)
     : AudioProcessor(BusesProperties()
                          .withInput("Input", juce::AudioChannelSet::stereo(), true)
                          .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
-      apvts_(*this, nullptr, juce::Identifier(kStateTag), createParameterLayout()), params_(apvts_)
+      apvts_(*this, nullptr, juce::Identifier(kStateTag),
+             createParameterLayout(juce::jlimit(1, kNumConsoleChannels, initialChannels.first),
+                                   juce::jlimit(1, kNumConsoleChannels, initialChannels.second))),
+      params_(apvts_)
 {
     // L'APVTS non riceve un UndoManager di proposito, vedi UndoRecorder.
     undoRecorder_ = std::make_unique<UndoRecorder>(*this, undoManager_);
-    // Ogni nuova istanza parte con una coppia di canali a caso, così due istanze nuove non suonano uguali per
-    // caso; uno stato salvato la sostituisce. Il default dei parametri resta 1 / 2. I valori sono impostati
-    // senza gesti: nessun passo di undo (la cronologia si svuota comunque).
-    const auto [l, r] = drawChannelPair();
-    for (const auto& [id, value] : {std::pair{pid::chanL, l}, std::pair{pid::chanR, r}})
-    {
-        auto* param = apvts_.getParameter(id);
-        param->setValueNotifyingHost(param->convertTo0to1(static_cast<float>(value)));
-    }
-    undoManager_.clearUndoHistory();
+    // La coppia di canali casuale di questa istanza è il DEFAULT dei parametri (vedi il costruttore
+    // delegante), quindi valore == default fin dall'inizio, come richiede CLAP; uno stato salvato la
+    // sostituisce.
     // Solo la cartella: la lettura del disco avviene quando serve (l'host può creare molte istanze).
     presets_.setUserFolder(settings_->getEffectivePresetFolder());
     startTimerHz(30);
@@ -166,10 +164,13 @@ DriftboxAudioProcessor::~DriftboxAudioProcessor()
     stopTimer();
 }
 
-std::pair<int, int> DriftboxAudioProcessor::drawChannelPair() const
+DriftboxAudioProcessor::ChannelPair DriftboxAudioProcessor::drawChannelPair() const
 {
-    const int curL = juce::roundToInt(params_.chanL->load());
-    const int curR = juce::roundToInt(params_.chanR->load());
+    return drawChannelPair(juce::roundToInt(params_.chanL->load()), juce::roundToInt(params_.chanR->load()));
+}
+
+DriftboxAudioProcessor::ChannelPair DriftboxAudioProcessor::drawChannelPair(int curL, int curR)
+{
     int l = curL, r = curR;
     while (l == curL && r == curR)
     {
@@ -368,6 +369,9 @@ void DriftboxAudioProcessor::setStateInformation(const void* data, int sizeInByt
     migrateState(tree, version);
     apvts_.replaceState(tree);
     clearUndoHistory(); // l'intero stato è stato sostituito: i passi precedenti non valgono più
+    // Dice all'host che i valori dei parametri sono cambiati. Il wrapper CLAP traduce "programChanged" in
+    // params.rescan(VALUES), che clap-validator richiede quando il caricamento dello stato cambia i valori.
+    updateHostDisplay(ChangeDetails().withProgramChanged(true));
 }
 
 void DriftboxAudioProcessor::migrateState(juce::ValueTree&, int)

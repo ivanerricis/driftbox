@@ -44,7 +44,7 @@ TEST_CASE("Parameter layout: count, unique IDs and version", "[params]")
 
 TEST_CASE("Parameter ranges and defaults", "[params]")
 {
-    DriftboxAudioProcessor p;
+    DriftboxAudioProcessor p{DriftboxAudioProcessor::ChannelPair{1, 2}};
     auto& apvts = p.getAPVTS();
 
     CHECK(apvts.getRawParameterValue(pid::drift)->load() == Approx(0.5f));
@@ -66,7 +66,7 @@ TEST_CASE("Parameter ranges and defaults", "[params]")
         CHECK(r.isAutomatable());
     }
 
-    // I valori vivi di chanL/chanR sono una coppia casuale (nuova istanza): si controlla il default.
+    // Il default di chanL/chanR è la coppia dell'istanza (qui iniettata 1 / 2).
     for (const auto& [id, def] : {std::pair{pid::chanL, 1}, std::pair{pid::chanR, 2}})
     {
         auto* ch = dynamic_cast<juce::AudioParameterInt*>(&param(p, id));
@@ -130,4 +130,34 @@ TEST_CASE("Typed text round-trips through the parameters", "[params]")
         CHECK(juce::roundToInt(ch.convertFrom0to1(ch.getValueForText("1"))) == 1);
         CHECK(ch.getText(ch.convertTo0to1(37.0f), 32) == "37");
     }
+}
+
+TEST_CASE("Channel parameters start at their per-instance default", "[params]")
+{
+    for (int i = 0; i < 20; ++i)
+    {
+        DriftboxAudioProcessor p;
+        auto& chanL = param(p, pid::chanL);
+        auto& chanR = param(p, pid::chanR);
+        // CLAP: il valore iniziale coincide con il default.
+        CHECK(chanL.getValue() == Approx(chanL.getDefaultValue()));
+        CHECK(chanR.getValue() == Approx(chanR.getDefaultValue()));
+
+        const int l = juce::roundToInt(chanL.convertFrom0to1(chanL.getDefaultValue()));
+        const int r = juce::roundToInt(chanR.convertFrom0to1(chanR.getDefaultValue()));
+        CHECK(l >= 1);
+        CHECK(l <= kNumConsoleChannels);
+        CHECK(r == l % kNumConsoleChannels + 1);
+    }
+}
+
+TEST_CASE("An injected channel pair becomes the parameter default", "[params]")
+{
+    DriftboxAudioProcessor p{DriftboxAudioProcessor::ChannelPair{64, 1}};
+    auto& chanL = param(p, pid::chanL);
+    auto& chanR = param(p, pid::chanR);
+    CHECK(juce::roundToInt(chanL.convertFrom0to1(chanL.getDefaultValue())) == 64);
+    CHECK(juce::roundToInt(chanR.convertFrom0to1(chanR.getDefaultValue())) == 1);
+    CHECK(p.getAPVTS().getRawParameterValue(pid::chanL)->load() == Approx(64.0f));
+    CHECK(p.getAPVTS().getRawParameterValue(pid::chanR)->load() == Approx(1.0f));
 }
