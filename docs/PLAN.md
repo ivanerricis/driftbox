@@ -76,7 +76,7 @@ processBlock (stereo in/out, mono ammesso come in Pentagrit)
        ├─ seed atomico → DriftProfile::generate(seed)   (puro, deterministico, senza allocazioni)
        ├─ crossfade del profilo (~250 ms) al Randomize
        ├─ 16 DriftChannel preallocati; voce v → lato v & 1
-       │     pesi per voce con rampa lineare (30 ms), Σ pesi per lato = 1 sempre
+       │     pesi per voce con rampa lineare (50 ms), Σ pesi per lato = 1 sempre
        ├─ uscita lato = Σ peso_v · voce_v(x_lato)
        ├─ Output Gain (smoothed 20 ms)
        ├─ SafetyCeiling (soft knee da −1 dBFS, asintoto a 0 dBFS, latenza 0)
@@ -117,7 +117,7 @@ Ogni deviazione vale: **valore_profilo × Drift × Tolleranza × massimo**. Le d
 
 ### Cambio canali senza click
 - Le 16 voci sono preallocate in `prepare()`. Il peso target è 2/N per le voci v < N e 0 per le altre.
-- Rampa lineare di 30 ms sullo stesso orologio per tutte le voci, quindi Σ pesi per lato resta 1 anche durante la rampa. Se il cambio arriva a rampa in corso, si riparte dai pesi correnti.
+- Rampa lineare di 50 ms sullo stesso orologio per tutte le voci, quindi Σ pesi per lato resta 1 anche durante la rampa. Se il cambio arriva a rampa in corso, si riparte dai pesi correnti.
 - Una voce con peso esattamente 0 non viene elaborata. Quando riparte, `reset()` azzera lo stato e la rampa da 0 maschera il piccolo transitorio iniziale (i coefficienti sono vicini all'identità).
 - I valori dei 4 canali (2/4/8/16) mantengono le voci basse comuni, quindi il passaggio 4 → 8 aggiunge solo le voci 4..7.
 - `channels` resta **automatabile** perché il cambio è senza click e senza variazione di latenza. Diversamente da `numBands` di Pentagrit, che invece cambia la latenza.

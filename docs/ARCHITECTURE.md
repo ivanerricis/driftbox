@@ -53,14 +53,15 @@ for each side s (0 = L, 1 = R):
 The state is the APVTS value tree as XML, with tag `DRIFTBOX_STATE`. It carries these properties:
 
 - `stateVersion`: `kStateVersion`, currently 1
-- `driftSeed`: 16 hex digits, added in T4
-- `profileVersion`: `kProfileVersion`, added in T4
+- `driftSeed`: 16 lowercase hex digits (always 16)
+- `profileVersion`: `kProfileVersion`, currently 1 (the only profile generator version that exists so far)
 - `uiWidth` and `uiHeight`
 
 Loading and saving follow these rules:
 
-- **Versions**: `setStateInformation` ignores a state whose `stateVersion` is newer than the plugin's. A missing version counts as 1. Older versions go through `migrateState()`.
-- **Seed restore**: the seed is restored *without* a crossfade, so a reopened session sounds identical from the first sample.
+- **Versions**: `setStateInformation` ignores a state whose `stateVersion` or `profileVersion` is newer than the plugin's. A missing version counts as 1. Older versions go through `migrateState()`.
+- **Seed restore**: the seed is restored *without* a crossfade, so a reopened session sounds identical from the first sample. A missing or malformed `driftSeed` leaves the current seed unchanged.
+- **Randomize and undo**: `randomize()` (message thread) draws a new seed and records it as one undo step named "Randomize" (`SeedChangeAction`, with a crossfade on undo and redo). Parameter gestures from the UI are recorded as one step each by `UndoRecorder`; host automation is not. Restoring a state clears the history.
 - **Presets**: they never contain or overwrite `driftSeed` or `bypass`, because these are project-level values.
 
 ## Frozen C++ contracts (excerpts)
