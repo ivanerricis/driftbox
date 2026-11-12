@@ -34,7 +34,7 @@ private:
     juce::Rectangle<int> titleArea_, labelArea_[2];
 };
 
-// "TOLERANCE OF THIS CHANNEL PAIR": curve di deviazione (+-3 dB, 20 Hz - 20 kHz) e valori di L e R.
+// "TOLERANCE OF THIS CHANNEL PAIR": curve di deviazione (+-1,5 dB, 20 Hz - 20 kHz) e valori di L e R.
 class TolerancePanel final : public juce::Component, public juce::SettableTooltipClient
 {
 public:
@@ -58,7 +58,7 @@ public:
     const Inputs& inputs() const noexcept { return in_; }
 
     // Deviazione in dB del punto i (0..kPoints-1) della curva del lato (0 = L, 1 = R), non ancora limitata
-    // a +-3 dB. Per i test.
+    // a 1,5 volte il campo del grafico. Per i test.
     float curveDb(int side, int i) const noexcept
     {
         return curve_[static_cast<size_t>(side)][static_cast<size_t>(i)];
@@ -107,6 +107,8 @@ public:
 
     bool isOpen() const noexcept { return open_; }
     void setOpen(bool open);
+    // Chiamata quando l'utente apre o chiude il pannello con il pulsante (non da setOpen()).
+    std::function<void(bool open)> onOpenChanged;
     PillButton& toggleButton() noexcept { return toggle_; }
     LabelledKnob& knob(int index) noexcept { return *knobs_[static_cast<size_t>(index)]; }
     static constexpr int kNumKnobs = 5;

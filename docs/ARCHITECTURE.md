@@ -59,6 +59,7 @@ The state is the APVTS value tree as XML, with tag `DRIFTBOX_STATE`. It carries 
 - `stateVersion`: `kStateVersion`, currently 1
 - `profileVersion`: `kProfileVersion`, currently 1 (the only channel profile generator version that exists so far)
 - `uiWidth` and `uiHeight`
+- `advancedOpen`: whether the Advanced panel is open (absent means closed; not a parameter, no undo step)
 
 The channels are ordinary parameters, so they are saved with the parameter tree. Loading and saving follow these rules:
 

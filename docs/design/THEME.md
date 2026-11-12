@@ -65,7 +65,7 @@ Corner radii: panels 6, buttons 4, Show/Hide and the BYPASSED badge 3, plot 4.
 
 ## Tolerance graph
 
-- Vertical axis +-3 dB (labels `+3`, `0`, `-3`), horizontal lines every 1 dB, the 0 dB line in `bg3`.
+- Vertical axis +-1.5 dB (labels `+1.5`, `0`, `-1.5`), horizontal lines every 0.5 dB, the 0 dB line in `bg3`.
 - Horizontal axis 20 Hz to 20 kHz, logarithmic; labels `20 Hz`, `200`, `2 k`, `20 kHz` are spread evenly.
 - R curve 1.6 px, L curve 1.8 px (L on top). Curves are clipped at 1.5 x the vertical range.
 - When Bypass is on, labels and plot are drawn at 35 % opacity and a BYPASSED badge appears in the header.

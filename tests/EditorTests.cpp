@@ -197,6 +197,30 @@ TEST_CASE("Randomize from the button is one undo step", "[gui][Editor]")
     CHECK(juce::roundToInt(raw(processor, pid::chanL)) == l);
 }
 
+TEST_CASE("Advanced panel state is saved in the processor and restored by a new editor", "[gui][Editor]")
+{
+    DriftboxAudioProcessor processor;
+    processor.clearUndoHistory();
+    {
+        DriftboxAudioProcessorEditor editor(processor);
+        CHECK_FALSE(editor.getAdvancedPanel().isOpen());
+        editor.getAdvancedPanel().toggleButton().onClick();
+        CHECK(processor.getAdvancedOpen());
+        CHECK_FALSE(processor.getUndoManager().canUndo()); // aprire il pannello non è un passo di undo
+    }
+    {
+        DriftboxAudioProcessorEditor editor(processor);
+        auto& adv = editor.getAdvancedPanel();
+        CHECK(adv.isOpen());
+        CHECK(adv.toggleButton().getButtonText() == "HIDE");
+        CHECK(adv.knob(0).isVisible());
+        adv.toggleButton().onClick();
+        CHECK_FALSE(processor.getAdvancedOpen());
+    }
+    DriftboxAudioProcessorEditor editor(processor);
+    CHECK_FALSE(editor.getAdvancedPanel().isOpen());
+}
+
 TEST_CASE("Advanced panel shows and hides its knobs", "[gui][Editor]")
 {
     DriftboxAudioProcessor processor;
@@ -223,6 +247,7 @@ TEST_CASE("Advanced panel shows and hides its knobs", "[gui][Editor]")
     adv.toggleButton().onClick();
     CHECK_FALSE(adv.isOpen());
     CHECK_FALSE(adv.knob(0).isVisible());
+    CHECK_FALSE(processor.getAdvancedOpen());
 
     // Digitare una percentuale nella manopola la applica come un gesto (un passo di undo).
     adv.setOpen(true);

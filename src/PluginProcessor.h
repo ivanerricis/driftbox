@@ -73,6 +73,11 @@ public:
     juce::Point<int> getUiSize() const;
     void setUiSize(int width, int height);
 
+    // Pannello Advanced aperto o chiuso, salvato nello stato del plugin (message thread). Non è un
+    // parametro e non crea passi di undo; manca nei vecchi stati e allora vale falso.
+    bool getAdvancedOpen() const;
+    void setAdvancedOpen(bool open);
+
 private:
     // Message thread: esegue la richiesta differita di svuotare la cronologia (vedi clearUndoHistory()).
     void timerCallback() override;

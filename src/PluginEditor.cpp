@@ -48,6 +48,10 @@ DriftboxAudioProcessorEditor::DriftboxAudioProcessorEditor(DriftboxAudioProcesso
     };
     channelPanel_.onRandomize = [this] { processor_.randomize(); };
 
+    // Pannello Advanced: stato salvato nel progetto, scritto a ogni apertura o chiusura.
+    advancedPanel_.setOpen(processor_.getAdvancedOpen());
+    advancedPanel_.onOpenChanged = [this](bool open) { processor_.setAdvancedOpen(open); };
+
     // Dimensione: quella salvata se ha le nostre proporzioni, altrimenti la base.
     const auto stored = processor_.getUiSize();
     int w = kBaseWidth, h = kBaseHeight;
