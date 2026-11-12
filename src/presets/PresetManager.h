@@ -58,7 +58,7 @@ public:
     // ---- Preset corrente ----
     // Nome salvato nello stato; vuoto = nessun preset caricato (stato nuovo o di una versione precedente).
     juce::String getCurrentName() const;
-    // Nome mostrato nella barra: "Init" se nessun preset è caricato.
+    // Nome mostrato nella barra: "Default" se nessun preset è caricato.
     juce::String getDisplayName() const;
     const PresetEntry* findCurrent() const; // nullptr se non esiste in libreria
     bool isCurrentFactory() const;

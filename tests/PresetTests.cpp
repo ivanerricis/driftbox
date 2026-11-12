@@ -364,14 +364,21 @@ TEST_CASE("Previous and next wrap across the factory then the user list", "[pres
 TEST_CASE("Navigation from a fresh state and from a missing preset", "[presets]")
 {
     Fixture f;
-    // Stato nuovo: nessun nome salvato, la barra mostra Init e non c'è "modificato".
+    // Stato nuovo: nessun nome salvato, la barra mostra "Default" e non c'è "modificato" (nemmeno se si
+    // muove un parametro: nessun preset di riferimento).
     CHECK(f.pm.getCurrentName().isEmpty());
-    CHECK(f.pm.getDisplayName() == "Init");
+    CHECK(f.pm.getDisplayName() == "Default");
     CHECK_FALSE(f.pm.isModified());
     CHECK(f.pm.findCurrent() == nullptr);
+    setParam(f.p, pid::noise, 0.8f);
+    CHECK_FALSE(f.pm.isModified());
 
-    REQUIRE(f.pm.loadNext().wasOk()); // da "Init" (mostrato) al successivo
-    CHECK(f.pm.getCurrentName() == "Subtle Spread");
+    // Da "Default": avanti = il primo preset (Init), indietro = l'ultimo.
+    REQUIRE(f.pm.loadNext().wasOk());
+    CHECK(f.pm.getCurrentName() == "Init");
+    f.p.setPresetName({});
+    REQUIRE(f.pm.loadPrevious().wasOk());
+    CHECK(f.pm.getCurrentName() == "Noisy Desk");
 
     // Nome che non esiste più (file eliminato): avanti = primo, indietro = ultimo.
     f.p.setPresetName("Ghost");

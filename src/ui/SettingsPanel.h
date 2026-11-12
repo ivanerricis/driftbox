@@ -17,6 +17,20 @@ public:
     void paintButton(juce::Graphics&, bool highlighted, bool down) override;
 };
 
+// Collegamento testuale ("Source code"): testo ambra sottolineato al passaggio del mouse. Il clic apre
+// l'indirizzo nel browser (nessuna copia di juce::URL nel costruttore: evita un caso limite di JUCE con URL
+// vuoti).
+class LinkButton final : public juce::Button
+{
+public:
+    LinkButton(const juce::String& text, const juce::String& url);
+    void paintButton(juce::Graphics&, bool highlighted, bool down) override;
+    const juce::String& url() const noexcept { return url_; }
+
+private:
+    juce::String url_;
+};
+
 // Selettore a segmenti dello zoom: 75 / 100 / 125 / 150 / 200 %.
 class ZoomSelector final : public juce::Component
 {
@@ -69,7 +83,7 @@ public:
     PillButton& resetButton() noexcept { return reset_; }
     PillButton& doneButton() noexcept { return done_; }
     IconButton& closeButton() noexcept { return close_; }
-    juce::HyperlinkButton& sourceLink() noexcept { return source_; }
+    juce::Button& sourceLink() noexcept { return source_; }
     juce::String versionText() const;
     // Testo della cartella dei preset utente come appare nella finestra (%APPDATA% o ~ al posto del
     // percorso).
@@ -101,7 +115,7 @@ private:
     ToggleSwitch cpu_{"Show CPU"};
     PillButton changeFolder_; // "Change..." (inizializzato nel costruttore: ha il carattere di ellissi)
     juce::Component updatesSection_; // vedi updatesSection()
-    juce::HyperlinkButton source_;
+    LinkButton source_;
     PillButton copyDebug_{"Copy debug info", "Copy the plugin and host details to the clipboard"};
     PillButton reset_{"Reset settings", "Restore every setting to its default"};
     PillButton done_{"DONE", "Close the settings"};

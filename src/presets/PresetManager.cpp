@@ -131,7 +131,8 @@ juce::Result PresetManager::parsePreset(const juce::XmlElement& root, PresetValu
 
 juce::Result PresetManager::parsePresetFile(const juce::File& file, PresetValues& values)
 {
-    if (!file.existsAsFile() || file.getSize() > 1024 * 1024)
+    constexpr juce::int64 kMaxFileBytes = 1048576;
+    if (!file.existsAsFile() || file.getSize() > kMaxFileBytes)
     {
         return juce::Result::fail("Unreadable file");
     }
@@ -242,7 +243,7 @@ juce::String PresetManager::getCurrentName() const
 juce::String PresetManager::getDisplayName() const
 {
     const auto n = getCurrentName();
-    return n.isEmpty() ? juce::String("Init") : n;
+    return n.isEmpty() ? juce::String("Default") : n;
 }
 
 const PresetEntry* PresetManager::findByName(const juce::String& name) const
@@ -319,10 +320,8 @@ juce::Result PresetManager::loadPreset(const PresetEntry& entry)
     {
         return juce::Result::fail("No preset");
     }
-    // Copia: `entry` può puntare alla libreria, che un rescan() invalida.
-    const PresetEntry copy = entry;
-    processor_.applyPresetValues(copy.values, copy.name);
-    processor_.setPresetName(copy.name);
+    processor_.applyPresetValues(entry.values, entry.name);
+    processor_.setPresetName(entry.name);
     return juce::Result::ok();
 }
 
@@ -336,10 +335,10 @@ juce::Result PresetManager::step(int direction)
     }
     const int n = static_cast<int>(all.size());
     const auto current = getCurrentName();
-    int index = 0; // nessun preset caricato = barra su "Init" = primo
+    int index =
+        -1; // nessun preset caricato ("Default") o nome non in libreria: avanti = primo, indietro = ultimo
     if (current.isNotEmpty())
     {
-        index = -1; // nome non in libreria (ad es. file eliminato): avanti = primo, indietro = ultimo
         for (int i = 0; i < n; ++i)
         {
             if (all[static_cast<size_t>(i)].name.equalsIgnoreCase(current))
@@ -406,7 +405,7 @@ juce::Result PresetManager::save()
     }
     const auto file = cur->file;
     const auto name = cur->name;
-    const auto r = writeFile(file, name, captureValues());
+    auto r = writeFile(file, name, captureValues());
     if (r.wasOk())
     {
         rescan();
@@ -432,7 +431,7 @@ juce::Result PresetManager::saveAs(const juce::String& rawName, bool overwrite)
     {
         return juce::Result::fail("A preset with this name already exists");
     }
-    const auto r = writeFile(dest, name, captureValues());
+    auto r = writeFile(dest, name, captureValues());
     if (r.failed())
     {
         return r;

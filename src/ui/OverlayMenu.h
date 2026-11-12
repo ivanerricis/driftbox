@@ -35,7 +35,7 @@ public:
 
     // `topLeft` e `width` sono in coordinate del genitore. onDismiss viene chiamata una volta, quando il menu
     // vuole essere chiuso (clic fuori, Escape o voce scelta): il proprietario lo distrugge in modo differito.
-    OverlayMenu(juce::String title, std::vector<Item> items, juce::Point<int> topLeft, int width,
+    OverlayMenu(const juce::String& title, std::vector<Item> items, juce::Point<int> topLeft, int width,
                 std::function<void()> onDismiss);
 
     const std::vector<Item>& items() const noexcept { return items_; }

@@ -304,7 +304,7 @@ TEST_CASE("Top bar hooks: settings gear and preset bar placeholders", "[gui][Edi
     CHECK(settings == 1);
 
     auto& presets = editor.getTopBar().presetBar();
-    CHECK(presets.presetName() == "Init");
+    CHECK(presets.presetName() == "Default");
     presets.nextButton().onClick(); // senza gancio non fa nulla
     presets.onNext = [&] { ++next; };
     presets.nextButton().onClick();
@@ -471,9 +471,8 @@ TEST_CASE("Settings modal opens from the gear and closes with DONE, the X and Es
     REQUIRE(panel != nullptr);
     CHECK(panel->getParentComponent() == &editor.content());
     CHECK(panel->getBounds() == editor.content().getLocalBounds());
-    CHECK(panel->versionText() == juce::String("Driftbox ") + info::kVersion +
-                                      juce::String(juce::CharPointer_UTF8(" \xc2\xb7 ")) + "AGPL-3.0");
-    CHECK(panel->sourceLink().getURL().toString(false) == "https://github.com/ivanerricis/driftbox");
+    CHECK(panel->versionText() == juce::String("Driftbox ") + info::kVersion);
+    CHECK(panel->sourceLink().getTooltip() == "https://github.com/ivanerricis/driftbox");
     CHECK(panel->card().getWidth() == 460);
     CHECK_FALSE(panel->updatesSection().isVisible()); // T8b
 
@@ -646,7 +645,7 @@ TEST_CASE("Preset bar shows the loaded preset name and the modified dot", "[gui]
     SettingsGuard guard(processor);
     DriftboxAudioProcessorEditor editor(processor);
     auto& bar = editor.getTopBar().presetBar();
-    CHECK(bar.presetName() == "Init"); // nessun preset caricato
+    CHECK(bar.presetName() == "Default"); // nessun preset caricato
     CHECK_FALSE(bar.isModified());
 
     REQUIRE(
@@ -681,6 +680,12 @@ TEST_CASE("Preset bar buttons load the previous and next preset", "[gui][Editor]
     DriftboxAudioProcessorEditor editor(processor);
     auto& bar = editor.getTopBar().presetBar();
 
+    // Da "Default" (nessun preset caricato): avanti = il primo, indietro = l'ultimo.
+    bar.nextButton().onClick();
+    CHECK(bar.presetName() == "Init");
+    bar.prevButton().onClick();
+    CHECK(bar.presetName() == "Noisy Desk");
+    bar.nextButton().onClick();
     bar.nextButton().onClick();
     CHECK(bar.presetName() == "Subtle Spread");
     CHECK(raw(processor, pid::drift) == Approx(0.62f).margin(1e-4));
@@ -871,4 +876,19 @@ TEST_CASE("Snapshots: settings modal and preset list", "[gui][Editor][snapshot]"
     img = snapshot(editor, "presets-list");
     CHECK(distinctColours(img) > 30);
     editor.getMenu()->dismiss();
+}
+
+TEST_CASE("Snapshot: fresh instance shows Default in the preset bar", "[gui][Editor][snapshot]")
+{
+    DriftboxAudioProcessor processor;
+    SettingsGuard guard(processor);
+    setValue(processor, pid::chanL, 39.0f);
+    setValue(processor, pid::chanR, 40.0f);
+    DriftboxAudioProcessorEditor editor(processor);
+    editor.setZoom(1.0f);
+    editor.refreshNow();
+    CHECK(editor.getTopBar().presetBar().presetName() == "Default");
+    CHECK_FALSE(editor.getTopBar().presetBar().isModified());
+    const auto img = snapshot(editor, "preset-default");
+    CHECK(distinctColours(img) > 30);
 }

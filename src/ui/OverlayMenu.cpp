@@ -8,8 +8,8 @@ namespace
 const juce::Colour kHighlight{0xff394252};
 } // namespace
 
-OverlayMenu::OverlayMenu(juce::String title, std::vector<Item> items, juce::Point<int> topLeft, int width,
-                         std::function<void()> onDismiss)
+OverlayMenu::OverlayMenu(const juce::String& title, std::vector<Item> items, juce::Point<int> topLeft,
+                         int width, std::function<void()> onDismiss)
     : items_(std::move(items)), topLeft_(topLeft), width_(width), onDismiss_(std::move(onDismiss))
 {
     setTitle(title);

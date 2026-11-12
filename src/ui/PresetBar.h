@@ -57,7 +57,7 @@ private:
     NameButton nameButton_;
     IconButton next_{Icon::chevronRight, "Next preset", "Next preset", true};
     IconButton actions_{Icon::dots, "Preset actions", "Preset actions (save, delete)", true};
-    juce::String name_{"Init"};
+    juce::String name_{"Default"};
     bool modified_ = false;
 };
 } // namespace driftbox::ui

@@ -277,7 +277,7 @@ void DriftboxAudioProcessorEditor::openPresetList()
     auto& presets = processor_.getPresetManager();
     presets.rescan(); // vede i file aggiunti o tolti da fuori
     const auto current = presets.getCurrentName();
-    // Nessun preset caricato: la barra mostra "Init", quindi la spunta va sul primo di fabbrica.
+    // Nessun preset caricato: la barra mostra "Default", che non è in elenco, quindi nessuna spunta.
     const auto shown = current.isNotEmpty() ? current : presets.getDisplayName();
 
     using Item = ui::OverlayMenu::Item;

@@ -60,7 +60,7 @@ The state is the APVTS value tree as XML, with tag `DRIFTBOX_STATE`. It carries 
 - `profileVersion`: `kProfileVersion`, currently 1 (the only channel profile generator version that exists so far)
 - `uiWidth` and `uiHeight`
 - `advancedOpen`: whether the Advanced panel is open (absent means closed; not a parameter, no undo step)
-- `presetName`: the name of the preset last loaded or saved (absent means no preset is loaded; the bar then shows "Init"; not a parameter, no undo step)
+- `presetName`: the name of the preset last loaded or saved (absent means no preset is loaded; the bar then shows "Default"; not a parameter, no undo step)
 
 The channels are ordinary parameters, so they are saved with the parameter tree. Loading and saving follow these rules:
 
@@ -157,8 +157,8 @@ DSP module conventions (same as Pentagrit):
   unit parameters and 0.05 dB for `outGain`); there are no listeners, so host automation threads are not involved.
   The library is scanned when an editor opens, when a menu or dialog opens and on prev/next, never in the
   processor constructor.
-- A state without `presetName` (a new instance, or a project saved before presets existed) shows "Init" in the bar,
-  is not "modified" and has no loaded preset: next goes to the second preset, previous to the last one. Deleting the
+- A state without `presetName` (a new instance, or a project saved before presets existed) shows "Default" in the bar,
+  is never "modified" and has no loaded preset: next goes to the first preset (Init), previous to the last one. Deleting the
   current user preset loads Init.
 
 Factory preset values (denormalised; `outGain` is 0 dB in all of them):

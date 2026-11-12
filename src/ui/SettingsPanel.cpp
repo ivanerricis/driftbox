@@ -61,6 +61,30 @@ void ToggleSwitch::paintButton(juce::Graphics& g, bool highlighted, bool)
     }
 }
 
+// ============================== LinkButton
+LinkButton::LinkButton(const juce::String& text, const juce::String& url) : juce::Button(text), url_(url)
+{
+    setTitle(text);
+    setWantsKeyboardFocus(true);
+    setMouseCursor(juce::MouseCursor::PointingHandCursor);
+}
+
+void LinkButton::paintButton(juce::Graphics& g, bool highlighted, bool down)
+{
+    const auto area = getLocalBounds().toFloat();
+    const auto font = fonts::sans(11.0f);
+    g.setColour(highlighted || down ? col::accent.brighter(0.2f) : col::accent);
+    g.setFont(font);
+    g.drawText(getButtonText(), area, juce::Justification::centredRight, false);
+    if (highlighted || down || hasKeyboardFocus(false))
+    {
+        juce::GlyphArrangement ga;
+        ga.addLineOfText(font, getButtonText(), 0.0f, 0.0f);
+        const float w = ga.getBoundingBox(0, -1, true).getWidth();
+        g.fillRect(area.getRight() - w, area.getCentreY() + 7.0f, w, 1.0f);
+    }
+}
+
 // ============================== ZoomSelector
 ZoomSelector::ZoomSelector()
 {
@@ -133,7 +157,7 @@ void ZoomSelector::paint(juce::Graphics& g)
 // ============================== SettingsPanel
 SettingsPanel::SettingsPanel(SettingsManager& settings, std::function<juce::String()> debugInfo)
     : copyToClipboard([](const juce::String& t) { juce::SystemClipboard::copyTextToClipboard(t); }),
-      settings_(settings), debugInfo_(std::move(debugInfo)),
+      settings_(settings), debugInfo_(std::move(debugInfo)), source_("Source code", kSourceUrl),
       changeFolder_(ellipsisText("Change\xe2\x80\xa6"), "Choose the folder for your presets")
 {
     setTitle("Settings");
@@ -158,11 +182,8 @@ SettingsPanel::SettingsPanel(SettingsManager& settings, std::function<juce::Stri
     done_.setColours(col::ink, col::bg0, col::ink, col::bg0);
     done_.setToggleState(true, juce::dontSendNotification); // sempre "acceso": sfondo chiaro del mockup
 
-    source_.setButtonText("Source code");
-    source_.setURL(juce::URL(kSourceUrl));
-    source_.setFont(fonts::sans(11.0f), false, juce::Justification::centredRight);
-    source_.setColour(juce::HyperlinkButton::textColourId, col::accent);
     source_.setTooltip(kSourceUrl);
+    source_.onClick = [] { juce::URL(juce::String(kSourceUrl)).launchInDefaultBrowser(); };
 
     tooltips_.setTooltip("Show short help when hovering a control");
     cpu_.setTooltip("Show the CPU load in the footer");
@@ -198,8 +219,7 @@ SettingsPanel::~SettingsPanel()
 
 juce::String SettingsPanel::versionText() const
 {
-    return juce::String(info::kName) + " " + info::kVersion +
-           juce::String(juce::CharPointer_UTF8(" \xc2\xb7 ")) + "AGPL-3.0";
+    return juce::String(info::kName) + " " + info::kVersion;
 }
 
 juce::String SettingsPanel::folderText() const
