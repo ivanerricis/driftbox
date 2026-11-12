@@ -145,6 +145,7 @@ Ogni deviazione vale: **valore_profilo × Drift × Tolleranza × massimo**. Le d
   - `stateVersion = 1`
   - `profileVersion = 1`
   - `uiWidth` e `uiHeight`
+  - `advancedOpen` (pannello Advanced aperto; se manca vale falso; non è un parametro e non crea passi di undo)
 - `setStateInformation`: rifiuta versioni future (anche `profileVersion`), `migrateState()` come in Pentagrit, scarta un eventuale `driftSeed` delle build di sviluppo e svuota la cronologia undo. Uno stato letto prima del primo blocco suona identico dal primo campione (nessun fade); uno ripristinato durante la riproduzione fa il crossfade come un'automazione.
 - I preset **non** contengono né sovrascrivono `bypass`: vale a livello di progetto, come `bypass` e `osPhase` in Pentagrit.
 - Il determinismo cross-platform è garantito da un test con valori golden dei profili dei canali 1, 2 e 64.

@@ -95,6 +95,35 @@ TEST_CASE("State round trip", "[state]")
     CHECK(b.getUiSize().y == 640);
 }
 
+TEST_CASE("Advanced panel state round trips and a missing property means closed", "[state]")
+{
+    DriftboxAudioProcessor a;
+    CHECK_FALSE(a.getAdvancedOpen());
+
+    a.setAdvancedOpen(true);
+    const auto block = saveState(a);
+    DriftboxAudioProcessor b;
+    CHECK_FALSE(b.getAdvancedOpen());
+    loadState(b, block);
+    CHECK(b.getAdvancedOpen());
+
+    // Uno stato senza la proprietà (vecchio formato) lo chiude, anche se era aperto.
+    auto xml = toXml(block);
+    REQUIRE(xml != nullptr);
+    CHECK(xml->hasAttribute("advancedOpen"));
+    xml->removeAttribute("advancedOpen");
+    juce::MemoryBlock legacy;
+    juce::AudioProcessor::copyXmlToBinary(*xml, legacy);
+    loadState(b, legacy);
+    CHECK_FALSE(b.getAdvancedOpen());
+
+    // Non è un passo di undo.
+    a.clearUndoHistory();
+    a.setAdvancedOpen(false);
+    CHECK_FALSE(a.getUndoManager().canUndo());
+    CHECK(a.getAPVTS().getParameter("advancedOpen") == nullptr);
+}
+
 TEST_CASE("Channel extremes round trip", "[state]")
 {
     for (const auto& [l, r] : {std::pair{1, 64}, std::pair{64, 1}, std::pair{1, 1}, std::pair{64, 64}})

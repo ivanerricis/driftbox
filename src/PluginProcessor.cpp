@@ -15,6 +15,7 @@ const juce::Identifier kProfileVersionProp{"profileVersion"};
 const juce::Identifier kLegacySeedProp{"driftSeed"};
 const juce::Identifier kUiWidthProp{"uiWidth"};
 const juce::Identifier kUiHeightProp{"uiHeight"};
+const juce::Identifier kAdvancedOpenProp{"advancedOpen"};
 
 // Un cambio di parametro registrato. perform() viene eseguito quando il passo è registrato (il parametro ha
 // già il nuovo valore, quindi non fa nulla) e al redo; undo() ripristina il vecchio valore. I valori sono
@@ -351,5 +352,16 @@ void DriftboxAudioProcessor::setUiSize(int width, int height)
 {
     apvts_.state.setProperty(kUiWidthProp, width, nullptr);
     apvts_.state.setProperty(kUiHeightProp, height, nullptr);
+}
+
+bool DriftboxAudioProcessor::getAdvancedOpen() const
+{
+    return static_cast<bool>(apvts_.state.getProperty(kAdvancedOpenProp, false));
+}
+
+void DriftboxAudioProcessor::setAdvancedOpen(bool open)
+{
+    // Senza UndoManager: aprire o chiudere il pannello non è un passo di undo.
+    apvts_.state.setProperty(kAdvancedOpenProp, open, nullptr);
 }
 } // namespace driftbox

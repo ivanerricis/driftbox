@@ -191,7 +191,7 @@ void TolerancePanel::paintPlot(juce::Graphics& g, juce::Rectangle<float> plot) c
 
     g.saveState();
     g.reduceClipRegion(plot.toNearestInt());
-    // Linee ogni 1 dB (viewBox 120: y = 20, 40, ...); quella dello 0 dB è più chiara.
+    // Linee ogni 0,5 dB (il grafico copre +-1,5 dB in 6 parti); quella dello 0 dB è più chiara.
     for (int i = 1; i <= 5; ++i)
     {
         const int y = juce::roundToInt(plot.getY() + plot.getHeight() * static_cast<float>(i) / 6.0f);
@@ -304,10 +304,10 @@ void TolerancePanel::paint(juce::Graphics& g)
     g.setColour(col::ink3);
     g.setFont(fonts::mono(9.0f));
     const auto yl = yLabels_;
-    g.drawText("+3", yl.getX(), yl.getY() + 2, yl.getWidth(), 12, juce::Justification::centredRight, false);
+    g.drawText("+1.5", yl.getX(), yl.getY() + 2, yl.getWidth(), 12, juce::Justification::centredRight, false);
     g.drawText("0", yl.getX(), yl.getCentreY() - 6, yl.getWidth(), 12, juce::Justification::centredRight,
                false);
-    g.drawText(kMinus + "3", yl.getX(), yl.getBottom() - 14, yl.getWidth(), 12,
+    g.drawText(kMinus + "1.5", yl.getX(), yl.getBottom() - 14, yl.getWidth(), 12,
                juce::Justification::centredRight, false);
     paintPlot(g, plotArea_.toFloat());
     if (in_.bypassed)
@@ -415,7 +415,14 @@ AdvancedPanel::AdvancedPanel(juce::AudioProcessorValueTreeState& apvts)
     addAndMakeVisible(toggle_);
     toggle_.setLook(10.0f, 0.06f, 3.0f);
     toggle_.setColours(col::bg2, col::ink, col::ink, col::bg0);
-    toggle_.onClick = [this] { setOpen(!open_); };
+    toggle_.onClick = [this]
+    {
+        setOpen(!open_);
+        if (onOpenChanged)
+        {
+            onOpenChanged(open_);
+        }
+    };
 }
 
 void AdvancedPanel::setOpen(bool open)

@@ -9,7 +9,7 @@ namespace driftbox
 // l'audio thread). Usano DriftChannel::design() e BiquadCoeffs: nessuna formula è duplicata.
 
 // Estremi della curva mostrata, in dB.
-inline constexpr float kResponseGraphDb = 3.0f;
+inline constexpr float kResponseGraphDb = 1.5f;
 
 // Limite teorico della deviazione a Drift = 100 % e tolleranze = 100 %: le due shelf, la campana e il
 // guadagno possono sommarsi.
