@@ -45,7 +45,23 @@ DriftboxAudioProcessorEditor::DriftboxAudioProcessorEditor(DriftboxAudioProcesso
         {
             onSettings();
         }
+        openSettings();
     };
+
+    // Barra dei preset: il gestore (nel processor) fa il lavoro, la barra mostra nome e "modificato".
+    auto& bar = topBar_.presetBar();
+    bar.onPrev = [this]
+    {
+        processor_.getPresetManager().loadPrevious();
+        refreshNow();
+    };
+    bar.onNext = [this]
+    {
+        processor_.getPresetManager().loadNext();
+        refreshNow();
+    };
+    bar.onOpenList = [this] { openPresetList(); };
+    bar.onOpenActions = [this] { openPresetActions(); };
     channelPanel_.onRandomize = [this] { processor_.randomize(); };
 
     // Pannello Advanced: stato salvato nel progetto, scritto a ogni apertura o chiusura.
@@ -55,13 +71,22 @@ DriftboxAudioProcessorEditor::DriftboxAudioProcessorEditor(DriftboxAudioProcesso
     // Dimensione: quella salvata se ha le nostre proporzioni, altrimenti la base.
     const auto stored = processor_.getUiSize();
     int w = kBaseWidth, h = kBaseHeight;
+    const int zoomPercent = processor_.getSettings().get().zoomPercent;
     const float aspect = static_cast<float>(kBaseWidth) / static_cast<float>(kBaseHeight);
-    if (std::abs(static_cast<float>(stored.x) / static_cast<float>(stored.y) - aspect) < 0.02f &&
+    if (processor_.hasStoredUiSize() &&
+        std::abs(static_cast<float>(stored.x) / static_cast<float>(stored.y) - aspect) < 0.02f &&
         static_cast<float>(stored.x) >= static_cast<float>(kBaseWidth) * kMinZoom - 1.0f &&
         static_cast<float>(stored.x) <= static_cast<float>(kBaseWidth) * kMaxZoom + 1.0f)
     {
         w = stored.x;
         h = juce::roundToInt(static_cast<float>(w) / aspect);
+    }
+    else if (!processor_.hasStoredUiSize())
+    {
+        // Editor nuovo in uno stato senza dimensione salvata: parte dallo zoom delle impostazioni.
+        const float zoom = static_cast<float>(zoomPercent) / 100.0f;
+        w = juce::roundToInt(static_cast<float>(kBaseWidth) * zoom);
+        h = juce::roundToInt(static_cast<float>(kBaseHeight) * zoom);
     }
     constrainer_.setFixedAspectRatio(static_cast<double>(aspect));
     constrainer_.setSizeLimits(juce::roundToInt(static_cast<float>(kBaseWidth) * kMinZoom),
@@ -74,7 +99,9 @@ DriftboxAudioProcessorEditor::DriftboxAudioProcessorEditor(DriftboxAudioProcesso
     content_.setSize(kBaseWidth, kBaseHeight);
     layoutContent();
     addMouseListener(this, true);
-    setTooltipsEnabled(true);
+    appliedZoomPercent_ = zoomPercent; // lo zoom iniziale è già in w e h
+    applySettings();
+    processor_.getSettings().addChangeListener(this);
     setSize(w, h);
 
     lastTickMs_ = juce::Time::getMillisecondCounterHiRes();
@@ -85,6 +112,7 @@ DriftboxAudioProcessorEditor::DriftboxAudioProcessorEditor(DriftboxAudioProcesso
 DriftboxAudioProcessorEditor::~DriftboxAudioProcessorEditor()
 {
     stopTimer();
+    processor_.getSettings().removeChangeListener(this);
     removeMouseListener(this);
     tooltip_.reset();
     setLookAndFeel(nullptr);
@@ -107,6 +135,234 @@ void DriftboxAudioProcessorEditor::setTooltipsEnabled(bool enabled)
     else if (!enabled && tooltip_ != nullptr)
     {
         tooltip_.reset();
+    }
+}
+
+void DriftboxAudioProcessorEditor::changeListenerCallback(juce::ChangeBroadcaster*)
+{
+    applySettings();
+}
+
+void DriftboxAudioProcessorEditor::applySettings()
+{
+    auto& settings = processor_.getSettings();
+    const auto& s = settings.get();
+    setTooltipsEnabled(s.tooltips);
+    showCpu = s.showCpu;
+    // Lo zoom si applica solo quando cambia: così un altro interruttore non ridimensiona la finestra che
+    // l'utente ha trascinato.
+    if (s.zoomPercent != appliedZoomPercent_)
+    {
+        appliedZoomPercent_ = s.zoomPercent;
+        setZoom(static_cast<float>(s.zoomPercent) / 100.0f);
+    }
+    auto& presets = processor_.getPresetManager();
+    const auto folder = settings.getEffectivePresetFolder();
+    if (folder != presets.getUserFolder() || !presetsScanned_)
+    {
+        presets.setUserFolder(folder);
+        presets.rescan();
+        presetsScanned_ = true;
+    }
+}
+
+// ---- Finestre sovrapposte ----
+namespace
+{
+// Distrugge `slot` fuori dal gestore di eventi del componente che l'ha chiesto (un pulsante non si cancella
+// dentro il proprio clic). Il confronto sul puntatore evita di distruggere un componente più nuovo.
+template <typename T>
+void releaseLater(juce::Component::SafePointer<DriftboxAudioProcessorEditor> safe, T* raw,
+                  std::unique_ptr<T> DriftboxAudioProcessorEditor::* slot)
+{
+    juce::MessageManager::callAsync(
+        [safe, raw, slot]
+        {
+            if (safe != nullptr && (safe.getComponent()->*slot).get() == raw)
+            {
+                (safe.getComponent()->*slot).reset();
+            }
+        });
+}
+} // namespace
+
+void DriftboxAudioProcessorEditor::openSettings()
+{
+    if (isSettingsOpen())
+    {
+        return;
+    }
+    closeMenu();
+    auto panel = std::make_unique<ui::SettingsPanel>(processor_.getSettings(),
+                                                     [this] { return processor_.getDebugInfo(); });
+    panel->onClose = [this] { closeModal(); };
+    modal_ = std::move(panel);
+    content_.addAndMakeVisible(*modal_);
+    modal_->open();
+}
+
+bool DriftboxAudioProcessorEditor::isSettingsOpen() const
+{
+    return dynamic_cast<ui::SettingsPanel*>(modal_.get()) != nullptr && modal_->isVisible();
+}
+
+ui::SettingsPanel* DriftboxAudioProcessorEditor::getSettingsPanel() noexcept
+{
+    return modal_ != nullptr && modal_->isVisible() ? dynamic_cast<ui::SettingsPanel*>(modal_.get())
+                                                    : nullptr;
+}
+
+ui::PresetDialog* DriftboxAudioProcessorEditor::getPresetDialog() noexcept
+{
+    return modal_ != nullptr && modal_->isVisible() ? dynamic_cast<ui::PresetDialog*>(modal_.get()) : nullptr;
+}
+
+ui::OverlayMenu* DriftboxAudioProcessorEditor::getMenu() noexcept
+{
+    return isMenuOpen() ? menu_.get() : nullptr;
+}
+
+void DriftboxAudioProcessorEditor::closeModal()
+{
+    if (modal_ == nullptr)
+    {
+        return;
+    }
+    modal_->setVisible(false);
+    releaseLater(juce::Component::SafePointer<DriftboxAudioProcessorEditor>(this), modal_.get(),
+                 &DriftboxAudioProcessorEditor::modal_);
+    grabKeyboardFocus(); // undo e redo da tastiera tornano all'editor
+}
+
+bool DriftboxAudioProcessorEditor::isMenuOpen() const
+{
+    return menu_ != nullptr && menu_->isVisible();
+}
+
+void DriftboxAudioProcessorEditor::closeMenu()
+{
+    if (menu_ == nullptr)
+    {
+        return;
+    }
+    menu_->setVisible(false);
+    releaseLater(juce::Component::SafePointer<DriftboxAudioProcessorEditor>(this), menu_.get(),
+                 &DriftboxAudioProcessorEditor::menu_);
+    grabKeyboardFocus();
+}
+
+juce::Point<int> DriftboxAudioProcessorEditor::menuAnchor(juce::Component& button) const
+{
+    // Sotto il pulsante, 4 px di distanza, nel sistema di coordinate del layout (come nel mockup).
+    const auto r = content_.getLocalArea(&button, button.getLocalBounds());
+    return {r.getX(), r.getBottom() + 4};
+}
+
+void DriftboxAudioProcessorEditor::showMenu(std::unique_ptr<ui::OverlayMenu> menu)
+{
+    if (modal_ != nullptr && modal_->isVisible())
+    {
+        return;
+    }
+    menu_ = std::move(menu);
+    content_.addAndMakeVisible(*menu_);
+    menu_->open();
+}
+
+void DriftboxAudioProcessorEditor::openPresetList()
+{
+    if (isMenuOpen())
+    {
+        return;
+    }
+    auto& presets = processor_.getPresetManager();
+    presets.rescan(); // vede i file aggiunti o tolti da fuori
+    const auto current = presets.getCurrentName();
+    // Nessun preset caricato: la barra mostra "Init", quindi la spunta va sul primo di fabbrica.
+    const auto shown = current.isNotEmpty() ? current : presets.getDisplayName();
+
+    using Item = ui::OverlayMenu::Item;
+    std::vector<Item> items;
+    auto add = [&](const PresetEntry& e)
+    {
+        Item it;
+        it.text = e.name;
+        it.checked = e.name.equalsIgnoreCase(shown);
+        it.action = [this, entry = e]
+        {
+            processor_.getPresetManager().loadPreset(entry);
+            refreshNow();
+        };
+        items.push_back(std::move(it));
+    };
+    items.push_back({Item::Kind::header, "Factory", true, false, {}});
+    for (const auto& e : presets.getFactoryPresets())
+    {
+        add(e);
+    }
+    items.push_back({Item::Kind::header, "User", true, false, {}});
+    if (presets.getUserPresets().empty())
+    {
+        items.push_back({Item::Kind::note, "No user presets yet", true, false, {}});
+    }
+    for (const auto& e : presets.getUserPresets())
+    {
+        add(e);
+    }
+
+    const auto at = menuAnchor(topBar_.presetBar().nameButton());
+    showMenu(
+        std::make_unique<ui::OverlayMenu>("Presets", std::move(items), at, 200, [this] { closeMenu(); }));
+}
+
+void DriftboxAudioProcessorEditor::openPresetActions()
+{
+    if (isMenuOpen())
+    {
+        return;
+    }
+    auto& presets = processor_.getPresetManager();
+    presets.rescan();
+    const bool user = presets.isCurrentUser(); // Save e Delete solo per i preset utente
+
+    using Item = ui::OverlayMenu::Item;
+    std::vector<Item> items;
+    items.push_back({Item::Kind::item, "Save", user, false, [this]
+                     {
+                         const auto r = processor_.getPresetManager().save();
+                         if (r.failed())
+                         {
+                             footer_.setHint("Could not save the preset: " + r.getErrorMessage());
+                         }
+                         refreshNow();
+                     }});
+    items.push_back({Item::Kind::item, juce::String(juce::CharPointer_UTF8("Save As\xe2\x80\xa6")), true,
+                     false, [this] { openPresetDialog(ui::PresetDialog::Mode::saveAs); }});
+    items.push_back({Item::Kind::item, "Delete", user, false,
+                     [this] { openPresetDialog(ui::PresetDialog::Mode::confirmDelete); }});
+
+    auto at = menuAnchor(topBar_.presetBar().actionsButton());
+    constexpr int width = 150;
+    at.x = juce::jmin(at.x, kBaseWidth - width - 8);
+    showMenu(std::make_unique<ui::OverlayMenu>("Preset actions", std::move(items), at, width,
+                                               [this] { closeMenu(); }));
+}
+
+void DriftboxAudioProcessorEditor::openPresetDialog(ui::PresetDialog::Mode mode)
+{
+    if (modal_ != nullptr && modal_->isVisible())
+    {
+        return;
+    }
+    auto dialog =
+        std::make_unique<ui::PresetDialog>(processor_.getPresetManager(), mode, [this] { refreshNow(); });
+    dialog->onClose = [this] { closeModal(); };
+    modal_ = std::move(dialog);
+    content_.addAndMakeVisible(*modal_);
+    modal_->open();
+    if (auto* d = getPresetDialog(); d != nullptr && mode == ui::PresetDialog::Mode::saveAs)
+    {
+        d->nameEditor().grabKeyboardFocus();
     }
 }
 
@@ -252,6 +508,10 @@ void DriftboxAudioProcessorEditor::refreshNow()
 
     auto& um = processor_.getUndoManager();
     topBar_.setHistoryState(um.canUndo(), um.canRedo());
+
+    auto& presets = processor_.getPresetManager();
+    topBar_.presetBar().setPresetName(presets.getDisplayName());
+    topBar_.presetBar().setModified(presets.isModified());
 
     footer_.setShowCpu(showCpu);
     footer_.setCpu(meters.cpuLoad.load(std::memory_order_relaxed));

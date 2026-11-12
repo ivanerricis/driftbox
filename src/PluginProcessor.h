@@ -3,6 +3,8 @@
 
 #include "dsp/DriftEngine.h"
 #include "params/DriftboxParameters.h"
+#include "presets/PresetManager.h"
+#include "settings/SettingsManager.h"
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include <atomic>
@@ -14,8 +16,8 @@ namespace driftbox
 inline constexpr int kDefaultUiWidth = 720;
 inline constexpr int kDefaultUiHeight = 440;
 
-// Processor di Driftbox: parametri (tra cui il canale L e R), stato, Randomize e undo/redo dei gesti della
-// UI. Preset e impostazioni arrivano con il task T8 (vedi docs/PLAN.md).
+// Processor di Driftbox: parametri (tra cui il canale L e R), stato, Randomize, preset e undo/redo dei gesti
+// della UI. Le impostazioni dell'utente sono condivise da tutte le istanze (SettingsManager).
 class DriftboxAudioProcessor final : public juce::AudioProcessor, private juce::Timer
 {
 public:
@@ -78,6 +80,28 @@ public:
     bool getAdvancedOpen() const;
     void setAdvancedOpen(bool open);
 
+    // Vero se lo stato contiene già la dimensione dell'editor (un editor nuovo usa allora quella e non lo
+    // zoom delle impostazioni).
+    bool hasStoredUiSize() const;
+
+    // ---- Preset e impostazioni (SOLO MESSAGE THREAD) ----
+    PresetManager& getPresetManager() noexcept { return presets_; }
+    const PresetManager& getPresetManager() const noexcept { return presets_; }
+    SettingsManager& getSettings() noexcept { return *settings_; }
+
+    // Nome del preset corrente, salvato nello stato (proprietà non parametrica `presetName`, come uiWidth).
+    // Vuoto = nessun preset caricato. Non crea passi di undo.
+    juce::String getPresetName() const;
+    void setPresetName(const juce::String& name);
+
+    // Imposta i sette parametri dei preset (mai canali, bypass o proprietà dello stato) come UN solo passo di
+    // undo chiamato `undoName`. Non sostituisce l'albero dello stato. Non cambia presetName.
+    void applyPresetValues(const PresetValues& values, const juce::String& undoName);
+
+    // Testo per la segnalazione dei problemi (pulsante "Copy debug info"): nome, versione, formato, host,
+    // sistema operativo, frequenza di campionamento e dimensione del blocco.
+    juce::String getDebugInfo() const;
+
 private:
     // Message thread: esegue la richiesta differita di svuotare la cronologia (vedi clearUndoHistory()).
     void timerCallback() override;
@@ -93,8 +117,11 @@ private:
     juce::AudioProcessorValueTreeState apvts_;
     ParamRefs params_;
     DriftEngine engine_;
-    // Vero dentro randomize(): il recorder non apre una transazione propria e il passo resta "Randomize".
-    bool randomizing_ = false;
+    juce::SharedResourcePointer<SettingsManager> settings_; // condiviso da tutte le istanze del processo
+    PresetManager presets_{*this};
+    // Vero dentro randomize() e applyPresetValues(): il recorder non apre una transazione propria e il passo
+    // resta quello già aperto ("Randomize" o il nome del preset).
+    bool groupedEdit_ = false;
     std::atomic<bool> pendingUndoClear_{false};
     double currentSampleRate_ = 0.0;
     std::unique_ptr<UndoRecorder> undoRecorder_; // ultimo: distrutto per primo

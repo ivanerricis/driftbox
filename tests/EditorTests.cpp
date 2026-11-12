@@ -408,3 +408,467 @@ TEST_CASE("Editor snapshot at 100 percent", "[gui][Editor]")
     CHECK(img.getPixelAt(1, 1) == ui::col::bg1);
     CHECK(img.getPixelAt(1, ui::kBaseHeight - 2) == ui::col::bg1);
 }
+
+// ============================== T8a: impostazioni e preset nell'editor
+namespace
+{
+// Impostazioni e cartella dei preset isolate per il test: parte dai valori predefiniti, punta i preset utente
+// a una cartella temporanea e ripristina tutto alla fine (le impostazioni sono condivise tra i test).
+struct SettingsGuard
+{
+    explicit SettingsGuard(DriftboxAudioProcessor& p)
+        : proc(p), dir(juce::File::getSpecialLocation(juce::File::tempDirectory)
+                           .getChildFile("DriftboxEditorTest-" +
+                                         juce::String::toHexString(juce::Random().nextInt64())))
+    {
+        proc.getSettings().resetToDefaults();
+        UserSettings s;
+        s.presetFolder = dir.getFullPathName();
+        proc.getSettings().set(s);
+    }
+    ~SettingsGuard()
+    {
+        proc.getSettings().resetToDefaults();
+        dir.deleteRecursively();
+    }
+    DriftboxAudioProcessor& proc;
+    juce::File dir;
+};
+
+// Come un clic sull'interruttore (triggerClick() è asincrono e nei test non gira il message loop).
+void flip(ui::ToggleSwitch& sw)
+{
+    sw.setToggleState(!sw.getToggleState(), juce::dontSendNotification);
+    sw.onClick();
+}
+
+juce::StringArray menuTexts(ui::OverlayMenu& m)
+{
+    juce::StringArray out;
+    for (const auto& i : m.items())
+    {
+        out.add(i.text);
+    }
+    return out;
+}
+} // namespace
+
+TEST_CASE("Settings modal opens from the gear and closes with DONE, the X and Escape",
+          "[gui][Editor][settings]")
+{
+    DriftboxAudioProcessor processor;
+    SettingsGuard guard(processor);
+    DriftboxAudioProcessorEditor editor(processor);
+    int hook = 0;
+    editor.onSettings = [&] { ++hook; };
+    CHECK_FALSE(editor.isSettingsOpen());
+    CHECK(editor.getSettingsPanel() == nullptr);
+
+    editor.getTopBar().settingsButton().onClick();
+    CHECK(hook == 1);
+    REQUIRE(editor.isSettingsOpen());
+    auto* panel = editor.getSettingsPanel();
+    REQUIRE(panel != nullptr);
+    CHECK(panel->getParentComponent() == &editor.content());
+    CHECK(panel->getBounds() == editor.content().getLocalBounds());
+    CHECK(panel->versionText() == juce::String("Driftbox ") + info::kVersion +
+                                      juce::String(juce::CharPointer_UTF8(" \xc2\xb7 ")) + "AGPL-3.0");
+    CHECK(panel->sourceLink().getURL().toString(false) == "https://github.com/ivanerricis/driftbox");
+    CHECK(panel->card().getWidth() == 460);
+    CHECK_FALSE(panel->updatesSection().isVisible()); // T8b
+
+    // Un secondo clic sull'ingranaggio non apre un'altra finestra.
+    editor.getTopBar().settingsButton().onClick();
+    CHECK(editor.getSettingsPanel() == panel);
+
+    panel->doneButton().onClick();
+    CHECK_FALSE(editor.isSettingsOpen());
+    CHECK(editor.getSettingsPanel() == nullptr);
+
+    editor.openSettings();
+    REQUIRE(editor.isSettingsOpen());
+    CHECK(editor.getSettingsPanel()->keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)));
+    CHECK_FALSE(editor.isSettingsOpen());
+
+    editor.openSettings();
+    REQUIRE(editor.isSettingsOpen());
+    editor.getSettingsPanel()->closeButton().onClick();
+    CHECK_FALSE(editor.isSettingsOpen());
+
+    // Il modale tiene per sé i tasti: Ctrl+Z non arriva all'editor.
+    editor.openSettings();
+    juce::ParameterAttachment att(*processor.getAPVTS().getParameter(pid::drift), [](float) {}, nullptr);
+    att.setValueAsCompleteGesture(0.9f);
+    CHECK(editor.getSettingsPanel()->keyPressed(juce::KeyPress('z', juce::ModifierKeys::ctrlModifier, 0)));
+    CHECK(raw(processor, pid::drift) == Approx(0.9f));
+    editor.closeModal();
+}
+
+TEST_CASE("Settings: zoom applies to the open editor and is the default for new editors",
+          "[gui][Editor][settings]")
+{
+    DriftboxAudioProcessor processor;
+    SettingsGuard guard(processor);
+    DriftboxAudioProcessorEditor editor(processor);
+    CHECK(editor.getZoom() == Approx(1.0f));
+    editor.openSettings();
+    auto* panel = editor.getSettingsPanel();
+    REQUIRE(panel != nullptr);
+    CHECK(panel->zoomSelector().getPercent() == 100);
+
+    panel->zoomSelector().select(3); // 150 %
+    CHECK(processor.getSettings().get().zoomPercent == 150);
+    CHECK(editor.getZoom() == Approx(1.5f));
+    CHECK(editor.getWidth() == 1080);
+    CHECK(editor.getHeight() == 660);
+
+    panel->zoomSelector().select(0); // 75 %
+    CHECK(editor.getZoom() == Approx(0.75f));
+
+    // Un altro interruttore non ridimensiona la finestra che l'utente ha cambiato a mano.
+    editor.setZoom(1.25f);
+    flip(panel->tooltipsSwitch());
+    CHECK(editor.getZoom() == Approx(1.25f));
+    editor.closeModal();
+
+    // Un editor nuovo, in uno stato senza dimensione salvata, parte dallo zoom delle impostazioni.
+    UserSettings s = processor.getSettings().get();
+    s.zoomPercent = 200;
+    processor.getSettings().set(s);
+    {
+        DriftboxAudioProcessor fresh;
+        REQUIRE_FALSE(fresh.hasStoredUiSize());
+        DriftboxAudioProcessorEditor e2(fresh);
+        CHECK(e2.getZoom() == Approx(2.0f));
+        CHECK(fresh.hasStoredUiSize());
+    }
+    // Con una dimensione salvata nello stato vince quella.
+    {
+        DriftboxAudioProcessor saved;
+        saved.setUiSize(720, 440);
+        DriftboxAudioProcessorEditor e3(saved);
+        CHECK(e3.getZoom() == Approx(1.0f));
+    }
+}
+
+TEST_CASE("Settings: every open editor follows a zoom change", "[gui][Editor][settings]")
+{
+    DriftboxAudioProcessor a, b;
+    SettingsGuard guard(a);
+    DriftboxAudioProcessorEditor ea(a), eb(b);
+    UserSettings s = a.getSettings().get();
+    s.zoomPercent = 125;
+    a.getSettings().set(s);
+    CHECK(ea.getZoom() == Approx(1.25f));
+    CHECK(eb.getZoom() == Approx(1.25f));
+}
+
+TEST_CASE("Settings: Show CPU hides and shows the CPU text", "[gui][Editor][settings]")
+{
+    DriftboxAudioProcessor processor;
+    SettingsGuard guard(processor);
+    DriftboxAudioProcessorEditor editor(processor);
+    const juce::String version = juce::String("v") + info::kVersion;
+    editor.refreshNow();
+    CHECK(editor.getFooter().rightText().startsWith("CPU "));
+
+    editor.openSettings();
+    auto* panel = editor.getSettingsPanel();
+    REQUIRE(panel != nullptr);
+    CHECK(panel->cpuSwitch().getToggleState());
+    flip(panel->cpuSwitch());
+    CHECK_FALSE(processor.getSettings().get().showCpu);
+    CHECK_FALSE(editor.showCpu);
+    editor.refreshNow();
+    CHECK(editor.getFooter().rightText() == version);
+
+    flip(panel->cpuSwitch());
+    CHECK(processor.getSettings().get().showCpu);
+    editor.refreshNow();
+    CHECK(editor.getFooter().rightText().startsWith("CPU "));
+
+    // Un editor nuovo parte dal valore salvato.
+    UserSettings s = processor.getSettings().get();
+    s.showCpu = false;
+    processor.getSettings().set(s);
+    {
+        DriftboxAudioProcessor p2;
+        DriftboxAudioProcessorEditor e2(p2);
+        e2.refreshNow();
+        CHECK_FALSE(e2.showCpu);
+        CHECK(e2.getFooter().rightText() == version);
+    }
+    editor.closeModal();
+}
+
+TEST_CASE("Settings: tooltips switch, reset button and copy debug info", "[gui][Editor][settings]")
+{
+    DriftboxAudioProcessor processor;
+    processor.setRateAndBufferSizeDetails(48000.0, 512);
+    SettingsGuard guard(processor);
+    DriftboxAudioProcessorEditor editor(processor);
+    editor.openSettings();
+    auto* panel = editor.getSettingsPanel();
+    REQUIRE(panel != nullptr);
+
+    flip(panel->tooltipsSwitch());
+    CHECK_FALSE(processor.getSettings().get().tooltips);
+    panel->zoomSelector().select(4);
+    flip(panel->cpuSwitch());
+    REQUIRE(processor.getSettings().get().zoomPercent == 200);
+
+    panel->resetButton().onClick();
+    const auto& s = processor.getSettings().get();
+    CHECK(s.zoomPercent == 100);
+    CHECK(s.tooltips);
+    CHECK(s.showCpu);
+    CHECK(s.presetFolder.isEmpty());
+    // I controlli e l'editor seguono il ripristino.
+    CHECK(panel->zoomSelector().getPercent() == 100);
+    CHECK(panel->tooltipsSwitch().getToggleState());
+    CHECK(panel->cpuSwitch().getToggleState());
+    CHECK(editor.getZoom() == Approx(1.0f));
+    CHECK(editor.showCpu);
+
+    juce::String copied;
+    panel->copyToClipboard = [&](const juce::String& t) { copied = t; };
+    panel->copyDebugButton().onClick();
+    CHECK(copied == processor.getDebugInfo());
+    CHECK(copied.contains("Sample rate: 48000 Hz"));
+    CHECK(copied.contains("Block size: 512"));
+    CHECK(panel->copyDebugButton().getButtonText() == "Copied");
+    editor.closeModal();
+}
+
+TEST_CASE("Preset bar shows the loaded preset name and the modified dot", "[gui][Editor][presets]")
+{
+    DriftboxAudioProcessor processor;
+    SettingsGuard guard(processor);
+    DriftboxAudioProcessorEditor editor(processor);
+    auto& bar = editor.getTopBar().presetBar();
+    CHECK(bar.presetName() == "Init"); // nessun preset caricato
+    CHECK_FALSE(bar.isModified());
+
+    REQUIRE(
+        processor.getPresetManager().loadPreset(processor.getPresetManager().getFactoryPresets()[3]).wasOk());
+    editor.refreshNow();
+    CHECK(bar.presetName() == "Warm Console");
+    CHECK_FALSE(bar.isModified());
+
+    setValue(processor, pid::saturation, 0.9f);
+    editor.refreshNow();
+    CHECK(bar.presetName() == "Warm Console");
+    CHECK(bar.isModified());
+
+    setValue(processor, pid::saturation, 0.55f);
+    editor.refreshNow();
+    CHECK_FALSE(bar.isModified());
+
+    // Dopo la riapertura del progetto la barra mostra il nome salvato nello stato.
+    juce::MemoryBlock block;
+    processor.getStateInformation(block);
+    DriftboxAudioProcessor reopened;
+    reopened.setStateInformation(block.getData(), static_cast<int>(block.getSize()));
+    DriftboxAudioProcessorEditor editor2(reopened);
+    CHECK(editor2.getTopBar().presetBar().presetName() == "Warm Console");
+    CHECK_FALSE(editor2.getTopBar().presetBar().isModified());
+}
+
+TEST_CASE("Preset bar buttons load the previous and next preset", "[gui][Editor][presets]")
+{
+    DriftboxAudioProcessor processor;
+    SettingsGuard guard(processor);
+    DriftboxAudioProcessorEditor editor(processor);
+    auto& bar = editor.getTopBar().presetBar();
+
+    bar.nextButton().onClick();
+    CHECK(bar.presetName() == "Subtle Spread");
+    CHECK(raw(processor, pid::drift) == Approx(0.62f).margin(1e-4));
+    bar.nextButton().onClick();
+    CHECK(bar.presetName() == "Wide Pair");
+    bar.prevButton().onClick();
+    bar.prevButton().onClick();
+    CHECK(bar.presetName() == "Init");
+    bar.prevButton().onClick(); // giro completo all'indietro
+    CHECK(bar.presetName() == "Noisy Desk");
+    bar.nextButton().onClick(); // e in avanti
+    CHECK(bar.presetName() == "Init");
+    CHECK(raw(processor, pid::drift) == Approx(0.0f).margin(1e-4));
+}
+
+TEST_CASE("Preset list menu groups Factory and User and loads on click", "[gui][Editor][presets]")
+{
+    DriftboxAudioProcessor processor;
+    SettingsGuard guard(processor);
+    REQUIRE(
+        processor.getPresetManager().loadPreset(processor.getPresetManager().getFactoryPresets()[1]).wasOk());
+    DriftboxAudioProcessorEditor editor(processor);
+
+    editor.getTopBar().presetBar().nameButton().onClick();
+    REQUIRE(editor.isMenuOpen());
+    auto* menu = editor.getMenu();
+    REQUIRE(menu != nullptr);
+    CHECK(menu->getParentComponent() == &editor.content());
+    CHECK(menuTexts(*menu) == juce::StringArray{"Factory", "Init", "Subtle Spread", "Wide Pair",
+                                                "Warm Console", "Gentle Grit", "Noisy Desk", "User",
+                                                "No user presets yet"});
+    CHECK(menu->items()[2].checked); // il preset corrente ha la spunta
+    CHECK_FALSE(menu->items()[1].checked);
+
+    CHECK_FALSE(menu->activate(0)); // un titolo non si può scegliere
+    CHECK_FALSE(menu->activate(8)); // né una nota
+    CHECK(editor.isMenuOpen());
+    CHECK(menu->activate(5)); // Gentle Grit
+    CHECK_FALSE(editor.isMenuOpen());
+    CHECK(processor.getPresetName() == "Gentle Grit");
+    CHECK(raw(processor, pid::saturation) == Approx(0.85f).margin(1e-4));
+    CHECK(editor.getMenu() == nullptr);
+
+    // Con un preset utente la sezione User lo elenca.
+    REQUIRE(processor.getPresetManager().saveAs("Mine").wasOk());
+    editor.openPresetList();
+    REQUIRE(editor.isMenuOpen());
+    auto texts = menuTexts(*editor.getMenu());
+    CHECK(texts[texts.size() - 2] == "User");
+    CHECK(texts[texts.size() - 1] == "Mine");
+    CHECK(editor.getMenu()->items().back().checked);
+    editor.getMenu()->dismiss();
+    CHECK_FALSE(editor.isMenuOpen());
+}
+
+TEST_CASE("Preset actions menu: Save and Delete are disabled for factory presets", "[gui][Editor][presets]")
+{
+    DriftboxAudioProcessor processor;
+    SettingsGuard guard(processor);
+    DriftboxAudioProcessorEditor editor(processor);
+
+    REQUIRE(
+        processor.getPresetManager().loadPreset(processor.getPresetManager().getFactoryPresets()[2]).wasOk());
+    editor.getTopBar().presetBar().actionsButton().onClick();
+    REQUIRE(editor.isMenuOpen());
+    auto* menu = editor.getMenu();
+    REQUIRE(menu->items().size() == 3);
+    CHECK(menu->items()[0].text == "Save");
+    CHECK(menu->items()[1].text.startsWith("Save As"));
+    CHECK(menu->items()[2].text == "Delete");
+    CHECK_FALSE(menu->items()[0].enabled);
+    CHECK(menu->items()[1].enabled);
+    CHECK_FALSE(menu->items()[2].enabled);
+    CHECK_FALSE(menu->activate(0));
+    CHECK_FALSE(menu->activate(2));
+    menu->dismiss();
+
+    // Un preset utente li abilita.
+    REQUIRE(processor.getPresetManager().saveAs("Mine").wasOk());
+    editor.openPresetActions();
+    REQUIRE(editor.isMenuOpen());
+    CHECK(editor.getMenu()->items()[0].enabled);
+    CHECK(editor.getMenu()->items()[2].enabled);
+    editor.getMenu()->dismiss();
+}
+
+TEST_CASE("Save As, Save and Delete from the menu", "[gui][Editor][presets]")
+{
+    DriftboxAudioProcessor processor;
+    SettingsGuard guard(processor);
+    DriftboxAudioProcessorEditor editor(processor);
+    auto& pm = processor.getPresetManager();
+    REQUIRE(pm.loadPreset(pm.getFactoryPresets()[4]).wasOk()); // Gentle Grit
+    setValue(processor, pid::noise, 0.4f);
+    editor.refreshNow();
+    CHECK(editor.getTopBar().presetBar().isModified());
+
+    // Save As...
+    editor.openPresetActions();
+    REQUIRE(editor.getMenu()->activate(1));
+    auto* dialog = editor.getPresetDialog();
+    REQUIRE(dialog != nullptr);
+    CHECK(dialog->mode() == ui::PresetDialog::Mode::saveAs);
+    CHECK(dialog->nameEditor().getText() == "Gentle Grit copy"); // parte dal nome corrente + " copy"
+
+    // Un nome di un preset di fabbrica non si può usare.
+    dialog->nameEditor().setText("Init", true);
+    dialog->refreshStatus();
+    CHECK_FALSE(dialog->confirmButton().isEnabled());
+    CHECK(dialog->statusText().isNotEmpty());
+    CHECK_FALSE(dialog->confirm());
+    dialog->nameEditor().setText("   ", true);
+    dialog->refreshStatus();
+    CHECK_FALSE(dialog->confirmButton().isEnabled());
+
+    dialog->nameEditor().setText("UI Preset", true);
+    dialog->refreshStatus();
+    CHECK(dialog->confirmButton().isEnabled());
+    CHECK(dialog->statusText().isEmpty());
+    REQUIRE(dialog->confirm());
+    CHECK(guard.dir.getChildFile("UI Preset.dbp").existsAsFile());
+    CHECK(processor.getPresetName() == "UI Preset");
+    CHECK(editor.getTopBar().presetBar().presetName() == "UI Preset");
+    CHECK_FALSE(editor.getTopBar().presetBar().isModified());
+    CHECK(editor.getPresetDialog() == nullptr);
+
+    // Save: sovrascrive il preset utente con i valori correnti.
+    setValue(processor, pid::noise, 0.9f);
+    editor.refreshNow();
+    CHECK(editor.getTopBar().presetBar().isModified());
+    editor.openPresetActions();
+    REQUIRE(editor.getMenu()->activate(0));
+    editor.refreshNow();
+    CHECK_FALSE(editor.getTopBar().presetBar().isModified());
+    pm.rescan();
+    REQUIRE(pm.getUserPresets().size() == 1);
+    CHECK(pm.getUserPresets()[0].values[5] == Approx(0.9f).margin(1e-4));
+
+    // Save As con un nome esistente avvisa che lo sostituisce.
+    editor.openPresetActions();
+    REQUIRE(editor.getMenu()->activate(1));
+    dialog = editor.getPresetDialog();
+    REQUIRE(dialog != nullptr);
+    CHECK(dialog->nameEditor().getText() == "UI Preset");
+    CHECK(dialog->statusText().containsIgnoreCase("replaces"));
+    CHECK(dialog->confirmButton().isEnabled());
+    dialog->cancelButton().onClick();
+    CHECK(editor.getPresetDialog() == nullptr);
+
+    // Delete: chiede conferma, poi elimina il file e carica Init.
+    editor.openPresetActions();
+    REQUIRE(editor.getMenu()->activate(2));
+    dialog = editor.getPresetDialog();
+    REQUIRE(dialog != nullptr);
+    CHECK(dialog->mode() == ui::PresetDialog::Mode::confirmDelete);
+    CHECK(guard.dir.getChildFile("UI Preset.dbp").existsAsFile()); // ancora lì finché non si conferma
+    REQUIRE(dialog->confirm());
+    CHECK_FALSE(guard.dir.getChildFile("UI Preset.dbp").existsAsFile());
+    CHECK(editor.getTopBar().presetBar().presetName() == "Init");
+    CHECK(raw(processor, pid::drift) == Approx(0.0f).margin(1e-4));
+}
+
+TEST_CASE("Snapshots: settings modal and preset list", "[gui][Editor][snapshot]")
+{
+    DriftboxAudioProcessor processor;
+    SettingsGuard guard(processor);
+    setValue(processor, pid::chanL, 39.0f);
+    setValue(processor, pid::chanR, 40.0f);
+    REQUIRE(
+        processor.getPresetManager().loadPreset(processor.getPresetManager().getFactoryPresets()[1]).wasOk());
+    DriftboxAudioProcessorEditor editor(processor);
+    editor.setZoom(1.0f);
+    editor.refreshNow();
+
+    editor.openSettings();
+    REQUIRE(editor.isSettingsOpen());
+    auto img = snapshot(editor, "settings-open");
+    CHECK(img.getWidth() == ui::kBaseWidth);
+    // Lo sfondo è scurito: il pixel in alto a sinistra non è più il colore della barra alta.
+    CHECK(img.getPixelAt(1, 1) != ui::col::bg1);
+    // La scheda è centrata e ha il colore dei pannelli.
+    const auto card = editor.getSettingsPanel()->card();
+    CHECK(img.getPixelAt(card.getX() + 4, card.getY() + 4) == ui::col::bg1);
+    editor.closeModal();
+
+    editor.getTopBar().presetBar().nameButton().onClick();
+    REQUIRE(editor.isMenuOpen());
+    img = snapshot(editor, "presets-list");
+    CHECK(distinctColours(img) > 30);
+    editor.getMenu()->dismiss();
+}

@@ -4,6 +4,7 @@
 #include "PluginEditor.h"
 #include "PluginInfo.h"
 
+#include <array>
 #include <vector>
 
 namespace driftbox
@@ -16,6 +17,7 @@ const juce::Identifier kLegacySeedProp{"driftSeed"};
 const juce::Identifier kUiWidthProp{"uiWidth"};
 const juce::Identifier kUiHeightProp{"uiHeight"};
 const juce::Identifier kAdvancedOpenProp{"advancedOpen"};
+const juce::Identifier kPresetNameProp{"presetName"};
 
 // Un cambio di parametro registrato. perform() viene eseguito quando il passo è registrato (il parametro ha
 // già il nuovo valore, quindi non fa nulla) e al redo; undo() ripristina il vecchio valore. I valori sono
@@ -103,8 +105,9 @@ private:
             {
                 return;
             }
-            // Dentro randomize() la transazione "Randomize" è già aperta: un nome nuovo la rinominerebbe.
-            if (depth_ == 0 && !processor_.randomizing_)
+            // Dentro randomize() e applyPresetValues() la transazione è già aperta: un nome nuovo la
+            // rinominerebbe.
+            if (depth_ == 0 && !processor_.groupedEdit_)
             {
                 um_.beginNewTransaction(param->getName(64));
             }
@@ -153,6 +156,8 @@ DriftboxAudioProcessor::DriftboxAudioProcessor()
         param->setValueNotifyingHost(param->convertTo0to1(static_cast<float>(value)));
     }
     undoManager_.clearUndoHistory();
+    // Solo la cartella: la lettura del disco avviene quando serve (l'host può creare molte istanze).
+    presets_.setUserFolder(settings_->getEffectivePresetFolder());
     startTimerHz(30);
 }
 
@@ -183,14 +188,45 @@ void DriftboxAudioProcessor::randomize()
 
     // Un solo passo: i due gesti annidati vengono uniti dal recorder nella transazione "Randomize".
     undoManager_.beginNewTransaction("Randomize");
-    randomizing_ = true;
+    groupedEdit_ = true;
     pL->beginChangeGesture();
     pR->beginChangeGesture();
     pL->setValueNotifyingHost(pL->convertTo0to1(static_cast<float>(l)));
     pR->setValueNotifyingHost(pR->convertTo0to1(static_cast<float>(r)));
     pL->endChangeGesture();
     pR->endChangeGesture();
-    randomizing_ = false;
+    groupedEdit_ = false;
+}
+
+void DriftboxAudioProcessor::applyPresetValues(const PresetValues& values, const juce::String& undoName)
+{
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
+    std::array<juce::RangedAudioParameter*, kNumPresetParams> params{};
+    for (int i = 0; i < kNumPresetParams; ++i)
+    {
+        params[static_cast<size_t>(i)] = apvts_.getParameter(kPresetParamIds[i]);
+        jassert(params[static_cast<size_t>(i)] != nullptr);
+    }
+
+    // Un solo passo: i gesti annidati vengono uniti dal recorder nella transazione col nome del preset.
+    // I parametri si impostano uno per uno: lo stato (e quindi chanL, chanR, bypass e le proprietà) non si
+    // tocca.
+    undoManager_.beginNewTransaction(undoName);
+    groupedEdit_ = true;
+    for (auto* p : params)
+    {
+        p->beginChangeGesture();
+    }
+    for (int i = 0; i < kNumPresetParams; ++i)
+    {
+        auto* p = params[static_cast<size_t>(i)];
+        p->setValueNotifyingHost(p->convertTo0to1(values[static_cast<size_t>(i)]));
+    }
+    for (auto* p : params)
+    {
+        p->endChangeGesture();
+    }
+    groupedEdit_ = false;
 }
 
 void DriftboxAudioProcessor::clearUndoHistory()
@@ -352,6 +388,49 @@ void DriftboxAudioProcessor::setUiSize(int width, int height)
 {
     apvts_.state.setProperty(kUiWidthProp, width, nullptr);
     apvts_.state.setProperty(kUiHeightProp, height, nullptr);
+}
+
+bool DriftboxAudioProcessor::hasStoredUiSize() const
+{
+    return apvts_.state.hasProperty(kUiWidthProp) && apvts_.state.hasProperty(kUiHeightProp);
+}
+
+juce::String DriftboxAudioProcessor::getPresetName() const
+{
+    return apvts_.state.getProperty(kPresetNameProp, juce::String()).toString();
+}
+
+void DriftboxAudioProcessor::setPresetName(const juce::String& name)
+{
+    // Senza UndoManager: il nome non è un passo di undo.
+    apvts_.state.setProperty(kPresetNameProp, name, nullptr);
+}
+
+juce::String DriftboxAudioProcessor::getDebugInfo() const
+{
+    // Il wrapper CLAP di JUCE non imposta un tipo: tra i formati che compiliamo (VST3, CLAP, AU) "undefined"
+    // vuol dire CLAP.
+    const char* format = "CLAP";
+    switch (wrapperType)
+    {
+        case wrapperType_VST3:
+            format = "VST3";
+            break;
+        case wrapperType_AudioUnit:
+        case wrapperType_AudioUnitv3:
+            format = "AU";
+            break;
+        default:
+            break;
+    }
+    juce::String text;
+    text << info::kName << " " << info::kVersion << "\n"
+         << "Format: " << format << "\n"
+         << "Host: " << juce::PluginHostType().getHostDescription() << "\n"
+         << "OS: " << juce::SystemStats::getOperatingSystemName() << "\n"
+         << "Sample rate: " << juce::String(getSampleRate(), 0) << " Hz\n"
+         << "Block size: " << getBlockSize() << "\n";
+    return text;
 }
 
 bool DriftboxAudioProcessor::getAdvancedOpen() const

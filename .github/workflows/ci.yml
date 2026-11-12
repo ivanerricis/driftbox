@@ -59,9 +59,9 @@ jobs:
       - name: Configure (compile_commands.json)
         run: cmake --preset ci-linux -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DDRIFTBOX_BUILD_TESTS=OFF
       - name: Generate binary data headers
-        # DriftboxUiData.h comes from the juce_add_binary_data target DriftboxUiAssets
+        # DriftboxUiData.h and DriftboxPresetData.h come from the juce_add_binary_data targets DriftboxUiAssets and DriftboxPresetData
         # (there is no preset target to build).
-        run: cmake --build build/ci-linux --target DriftboxUiAssets
+        run: cmake --build build/ci-linux --target DriftboxUiAssets DriftboxPresetData
       - name: clang-tidy
         # Header filter anchored to this repo's src/ so .cpm and build/ headers are excluded.
         # Any project warning fails the job (third-party diagnostics are filtered out).

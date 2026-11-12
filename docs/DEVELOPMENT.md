@@ -30,11 +30,11 @@ On macOS also run `auval -v aufx Drbx Ivnr` (the AU must be installed in `~/Libr
 
 `clang-format` (v18 in CI) with `.clang-format`. See `CONTRIBUTING.md`.
 
-`clang-tidy` (job `clang-tidy`) is enforced: any warning in project code (`src/`) fails the job (`--warnings-as-errors='*'`). The checks are listed in `.clang-tidy`; `performance-enum-size` is disabled on purpose because several enums are frozen contracts. It needs a compile database plus the generated binary-data headers (`DriftboxUiData.h`). Build the target `DriftboxUiAssets` (a `juce_add_binary_data` target, not part of any preset) before running it, as the CI job does:
+`clang-tidy` (job `clang-tidy`) is enforced: any warning in project code (`src/`) fails the job (`--warnings-as-errors='*'`). The checks are listed in `.clang-tidy`; `performance-enum-size` is disabled on purpose because several enums are frozen contracts. It needs a compile database plus the generated binary-data headers (`DriftboxUiData.h`, `DriftboxPresetData.h`). Build the targets `DriftboxUiAssets` and `DriftboxPresetData` (`juce_add_binary_data` targets, not part of any preset) before running it, as the CI job does:
 
 ```
 cmake --preset ci-linux -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DDRIFTBOX_BUILD_TESTS=OFF
-cmake --build build/ci-linux --target DriftboxUiAssets
+cmake --build build/ci-linux --target DriftboxUiAssets DriftboxPresetData
 git ls-files 'src/*.cpp' | xargs clang-tidy-18 -p build/ci-linux --quiet --warnings-as-errors='*' --header-filter="^$PWD/src/.*"
 ```
 

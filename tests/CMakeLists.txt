@@ -13,6 +13,8 @@ add_executable(DriftboxTests
   UndoTests.cpp
   AllocationTests.cpp
   ToleranceResponseTests.cpp
+  PresetTests.cpp
+  SettingsTests.cpp
   EditorTests.cpp)
 
 target_link_libraries(DriftboxTests PRIVATE DriftboxCore Catch2::Catch2)

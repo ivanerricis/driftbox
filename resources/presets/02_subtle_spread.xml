@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<DRIFTBOX_PRESET version="1" name="Subtle Spread">
+  <PARAM id="drift" value="0.62"/>
+  <PARAM id="freqTol" value="0.5"/>
+  <PARAM id="phaseTol" value="0.5"/>
+  <PARAM id="gainTol" value="0.5"/>
+  <PARAM id="saturation" value="0.2"/>
+  <PARAM id="noise" value="0.0"/>
+  <PARAM id="outGain" value="0.0"/>
+</DRIFTBOX_PRESET>
