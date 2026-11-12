@@ -491,3 +491,39 @@ TEST_CASE("DriftChannel processAdd accumulates with a linear weight ramp", "[cha
         CHECK(sameBits(untouched, start));
     }
 }
+
+TEST_CASE("DriftChannel saturation is continuous at zero amount", "[channel]")
+{
+    const double sr = 48000.0;
+    const auto in = sine(4096, 997.0, sr, 1.0f);
+    VoiceTolerance tol;
+    const auto render = [&](float amount)
+    {
+        auto ch = makeChannel(sr);
+        VoiceAmounts a;
+        a.saturation = amount;
+        ch.update(tol, a, 1.0f);
+        Signal out(in.size());
+        for (size_t i = 0; i < in.size(); ++i)
+        {
+            out[i] = ch.processSample(in[i]);
+        }
+        return out;
+    };
+
+    const auto zero = render(0.0f);
+    const auto tiny = render(1.0e-6f);
+    float maxDiff = 0.0f;
+    for (size_t i = 0; i < in.size(); ++i)
+    {
+        maxDiff = std::max(maxDiff, std::abs(tiny[i] - zero[i]));
+    }
+    CHECK(maxDiff < 1.0e-5f);
+
+    // A saturazione piena (k = 2, m = 1) il risultato è tanh(k x) / k.
+    const auto full = render(1.0f);
+    for (size_t i = 0; i < in.size(); ++i)
+    {
+        REQUIRE(full[i] == Approx(std::tanh(2.0 * static_cast<double>(in[i])) / 2.0).margin(2.0e-4));
+    }
+}

@@ -66,8 +66,8 @@ void DriftChannel::update(const VoiceTolerance& tol, const VoiceAmounts& amounts
                  kHighShelfHz * std::exp2(tol.highShelfOct * kShelfSpreadOct), kShelfQ,
                  tol.highShelfDb * amounts.freq * kMaxShelfDb);
 
-    // Allpass del primo ordine: ritardo frazionario d >= 0 (in campioni), a = (1 - d) / (1 + d); d = 0 -> a
-    // = 1.
+    // Allpass del primo ordine: ritardo frazionario d >= 0 (in campioni), a = (1 - d) / (1 + d);
+    // con d = 0 si ha a = 1.
     const double d = static_cast<double>(tol.delay01) * static_cast<double>(amounts.phase) * kMaxDelayUs *
                      1.0e-6 * sampleRate_;
     apCoeff_ = static_cast<float>((1.0 - d) / (1.0 + d));
@@ -76,8 +76,10 @@ void DriftChannel::update(const VoiceTolerance& tol, const VoiceAmounts& amounts
     const double gainDb = static_cast<double>(tol.gainDb) * static_cast<double>(amounts.gain) * kMaxGainDb;
     gain_ = gainDb == 0.0 ? 1.0f : static_cast<float>(std::pow(10.0, gainDb / 20.0));
 
-    // Saturazione: k = 1 -> saltata.
+    // Saturazione: k = 1 -> saltata. La miscela m = clamp(k - 1, 0, 1) porta con continuità da y (m = 0) a
+    // tanh(k y) / k (m = 1), così non c'è salto quando la quantità arriva a 0.
     drive_ = 1.0f + kMaxDrive * amounts.saturation * (1.0f + kDriveSpread * tol.driveSpread);
+    satMix_ = clampTo(drive_ - 1.0f, 0.0f, 1.0f);
 
     // Rumore: l'RMS della voce deve valere il target. Il bianco uniforme ha RMS 1/sqrt(3) e il passa-basso
     // one-pole ne riduce la potenza di (1 - c) / (1 + c): si compensano entrambi analiticamente.
@@ -108,7 +110,7 @@ template <bool Sat, bool Noise> float DriftChannel::tick(float x) noexcept
 
     if constexpr (Sat)
     {
-        y = fastTanh(drive_ * y) / drive_;
+        y += satMix_ * (fastTanh(drive_ * y) / drive_ - y);
     }
     if constexpr (Noise)
     {

@@ -18,7 +18,7 @@ struct VoiceAmounts
 
 // Una voce interna: catena DSP indipendente e molto leggera.
 //   ingresso -> low shelf -> campana -> high shelf -> allpass del primo ordine (ritardo frazionario >= 0)
-//            -> guadagno -> saturazione morbida tanh(k x) / k -> + rumore
+//            -> guadagno -> miscela continua verso tanh(k x) / k -> + rumore
 // Tutte le deviazioni vengono da VoiceTolerance (profilo) x VoiceAmounts x limiti (vedi DriftProfile.h).
 //
 // Contratto:
@@ -72,6 +72,7 @@ private:
     float apCoeff_ = 1.0f, apState_ = 0.0f; // allpass del primo ordine; a = 1 -> identità
     float gain_ = 1.0f;
     float drive_ = 1.0f;    // k; 1 -> saturazione saltata
+    float satMix_ = 0.0f;   // m = clamp(k - 1, 0, 1): miscela tra y e tanh(k y) / k
     float noiseAmp_ = 0.0f; // ampiezza del rumore bianco prima del passa-basso (compensata)
     float noiseLpCoeff_ = 0.0f, noiseLpState_ = 0.0f;
     std::uint32_t noiseSeed_ = 1u;
