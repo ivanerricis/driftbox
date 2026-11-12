@@ -6,7 +6,8 @@ add_executable(DriftboxTests
   TestMain.cpp
   DriftboxTests.cpp
   ParameterTests.cpp
-  ProfileTests.cpp)
+  ProfileTests.cpp
+  ChannelTests.cpp)
 
 target_link_libraries(DriftboxTests PRIVATE DriftboxCore Catch2::Catch2)
 target_include_directories(DriftboxTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
