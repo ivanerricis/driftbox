@@ -40,7 +40,7 @@ PresetBar::PresetBar()
     {
         addAndMakeVisible(*c);
     }
-    nameButton_.setName(name_);
+    nameButton_.setLabelText(name_);
     prev_.onClick = [this]
     {
         if (onPrev)
@@ -74,7 +74,7 @@ PresetBar::PresetBar()
 void PresetBar::setPresetName(const juce::String& name)
 {
     name_ = name;
-    nameButton_.setName(name);
+    nameButton_.setLabelText(name);
 }
 
 void PresetBar::resized()

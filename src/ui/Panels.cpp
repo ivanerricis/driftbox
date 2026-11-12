@@ -194,9 +194,9 @@ void TolerancePanel::paintPlot(juce::Graphics& g, juce::Rectangle<float> plot) c
     // Linee ogni 1 dB (viewBox 120: y = 20, 40, ...); quella dello 0 dB è più chiara.
     for (int i = 1; i <= 5; ++i)
     {
-        const float y = std::round(plot.getY() + plot.getHeight() * static_cast<float>(i) / 6.0f) - 0.5f;
+        const int y = juce::roundToInt(plot.getY() + plot.getHeight() * static_cast<float>(i) / 6.0f);
         g.setColour(i == 3 ? col::bg3 : col::bg2);
-        g.drawHorizontalLine(static_cast<int>(y + 0.5f), plot.getX(), plot.getRight());
+        g.drawHorizontalLine(y, plot.getX(), plot.getRight());
     }
 
     const juce::PathStrokeType stroke1(1.6f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded);

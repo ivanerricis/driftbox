@@ -36,7 +36,7 @@ private:
     {
     public:
         NameButton();
-        void setName(const juce::String& n)
+        void setLabelText(const juce::String& n)
         {
             name_ = n;
             repaint();
