@@ -7,7 +7,8 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
-#include <initializer_list>
+#include <set>
+#include <tuple>
 
 using namespace driftbox;
 using Catch::Approx;
@@ -27,28 +28,29 @@ constexpr std::array<Field, 10> kAllFields = {&VoiceTolerance::lowShelfDb,  &Voi
                                               &VoiceTolerance::delay01,     &VoiceTolerance::gainDb,
                                               &VoiceTolerance::driveSpread, &VoiceTolerance::noiseLevel};
 
-bool identical(const DriftProfile& a, const DriftProfile& b)
+bool identical(const VoiceTolerance& a, const VoiceTolerance& b)
 {
-    if (a.seed != b.seed || a.noiseSeeds != b.noiseSeeds)
+    for (auto f : kAllFields)
     {
-        return false;
-    }
-    for (int v = 0; v < kMaxVoices; ++v)
-    {
-        for (auto f : kAllFields)
+        if (!(a.*f == b.*f))
         {
-            if (!(a.voices[static_cast<size_t>(v)].*f == b.voices[static_cast<size_t>(v)].*f))
-            {
-                return false;
-            }
+            return false;
         }
     }
     return true;
 }
 
-std::uint64_t testSeed(int i)
+bool identical(const ChannelProfile& a, const ChannelProfile& b)
 {
-    return 0x9E3779B97F4A7C15ull * static_cast<std::uint64_t>(i + 1) + 12345ull;
+    return a.noiseSeed == b.noiseSeed && identical(a.tol, b.tol);
+}
+
+// Tutti i campi (e il seed del rumore) di un profilo come tupla ordinabile.
+auto key(const ChannelProfile& p)
+{
+    const auto& t = p.tol;
+    return std::make_tuple(t.lowShelfDb, t.lowShelfOct, t.highShelfDb, t.highShelfOct, t.bellDb, t.bellPos01,
+                           t.delay01, t.gainDb, t.driveSpread, t.noiseLevel, p.noiseSeed);
 }
 } // namespace
 
@@ -60,167 +62,176 @@ TEST_CASE("SplitMix64 matches the reference implementation", "[profile]")
     CHECK(rng.next() == 0x06C45D188009454Full);
 }
 
-TEST_CASE("DriftProfile: same seed gives identical profile", "[profile]")
+TEST_CASE("channelProfile: same channel gives identical profile", "[profile]")
 {
-    for (std::uint64_t seed : {0ull, 1ull, 0xDEADBEEFCAFEF00Dull})
+    for (int c = 1; c <= kNumConsoleChannels; ++c)
     {
-        CHECK(identical(DriftProfile::generate(seed), DriftProfile::generate(seed)));
+        CHECK(identical(channelProfile(c), channelProfile(c)));
+        CHECK(identical(channelProfile(c), channelProfile(c, 1)));
     }
 }
 
-TEST_CASE("DriftProfile: different seeds give different profiles", "[profile]")
+TEST_CASE("channelProfile: all 64 channels are different", "[profile]")
 {
-    const std::array<std::uint64_t, 6> seeds = {
-        0ull, 1ull, 2ull, 0xFFFFFFFFFFFFFFFFull, 0x8000000000000000ull, 0x0123456789ABCDEFull};
-    for (size_t i = 0; i < seeds.size(); ++i)
+    std::set<decltype(key(channelProfile(1)))> profiles;
+    std::set<std::uint32_t> noiseSeeds;
+    for (int c = 1; c <= kNumConsoleChannels; ++c)
     {
-        for (size_t j = i + 1; j < seeds.size(); ++j)
+        profiles.insert(key(channelProfile(c)));
+        noiseSeeds.insert(channelProfile(c).noiseSeed);
+    }
+    CHECK(profiles.size() == static_cast<size_t>(kNumConsoleChannels));
+    CHECK(noiseSeeds.size() == static_cast<size_t>(kNumConsoleChannels));
+
+    // Tutte le 2016 coppie di canali sono distinte campo per campo.
+    for (int a = 1; a <= kNumConsoleChannels; ++a)
+    {
+        for (int b = a + 1; b <= kNumConsoleChannels; ++b)
         {
-            CHECK_FALSE(identical(DriftProfile::generate(seeds[i]), DriftProfile::generate(seeds[j])));
+            REQUIRE_FALSE(identical(channelProfile(a), channelProfile(b)));
         }
     }
 }
 
-TEST_CASE("DriftProfile: fields stay inside their ranges", "[profile]")
+TEST_CASE("channelProfile: fields stay inside their ranges", "[profile]")
 {
-    for (int i = 0; i < 200; ++i)
+    for (int c = 1; c <= kNumConsoleChannels; ++c)
     {
-        const auto p = DriftProfile::generate(testSeed(i));
-        CHECK(p.seed == testSeed(i));
-        for (int v = 0; v < kMaxVoices; ++v)
+        const auto p = channelProfile(c);
+        for (auto f : kBipolarFields)
         {
-            const auto& t = p.voices[static_cast<size_t>(v)];
-            for (auto f : kBipolarFields)
-            {
-                const float x = t.*f;
-                REQUIRE_FALSE(std::isnan(x));
-                REQUIRE(x >= -1.0f);
-                REQUIRE(x <= 1.0f);
-            }
-            for (auto f : {&VoiceTolerance::bellPos01, &VoiceTolerance::delay01})
-            {
-                const float x = t.*f;
-                REQUIRE_FALSE(std::isnan(x));
-                REQUIRE(x >= 0.0f);
-                REQUIRE(x < 1.0f);
-            }
-            REQUIRE(p.noiseSeeds[static_cast<size_t>(v)] != 0u);
+            const float x = p.tol.*f;
+            REQUIRE_FALSE(std::isnan(x));
+            REQUIRE(x >= -1.0f);
+            REQUIRE(x <= 1.0f);
         }
+        for (auto f : {&VoiceTolerance::bellPos01, &VoiceTolerance::delay01})
+        {
+            const float x = p.tol.*f;
+            REQUIRE_FALSE(std::isnan(x));
+            REQUIRE(x >= 0.0f);
+            REQUIRE(x < 1.0f);
+        }
+        REQUIRE(p.noiseSeed != 0u);
     }
 }
 
-TEST_CASE("DriftProfile: bipolar fields are centred on zero", "[profile]")
+TEST_CASE("channelProfile: statistics over the 64 channels", "[profile]")
 {
-    constexpr int kSeeds = 1000;
+    // Ogni campo bipolare è triangolare in [-1, 1] con varianza 1/6 (somma di due uniformi in [-1, 1]
+    // dimezzata: (1/3 + 1/3) / 4), quindi sigma = 0.408. La media di 64 canali ha sigma = 0.408 / sqrt(64) =
+    // 0.051 e la soglia 0.15 vale circa 2.9 sigma (0.1 sarebbe solo 2 sigma per campo, circa il 34 % di
+    // fallimenti casuali su 8 campi). I valori sono deterministici: il test non è casuale. delay01 è uniforme
+    // in [0, 1) con sigma 0.289 / 8 = 0.036: la soglia 0.1 vale 2.8 sigma.
     std::array<double, kBipolarFields.size()> sum{};
     double delaySum = 0.0;
-    for (int i = 0; i < kSeeds; ++i)
+    for (int c = 1; c <= kNumConsoleChannels; ++c)
     {
-        const auto p = DriftProfile::generate(testSeed(i));
-        for (const auto& t : p.voices)
+        const auto p = channelProfile(c);
+        for (size_t k = 0; k < kBipolarFields.size(); ++k)
         {
-            for (size_t k = 0; k < kBipolarFields.size(); ++k)
-            {
-                sum[k] += static_cast<double>(t.*kBipolarFields[k]);
-            }
-            delaySum += static_cast<double>(t.delay01);
+            sum[k] += static_cast<double>(p.tol.*kBipolarFields[k]);
         }
+        delaySum += static_cast<double>(p.tol.delay01);
     }
-    const double n = static_cast<double>(kSeeds) * kMaxVoices;
+    const double n = kNumConsoleChannels;
     for (size_t k = 0; k < kBipolarFields.size(); ++k)
     {
-        CHECK(std::abs(sum[k] / n) < 0.05);
+        INFO("bipolar field " << k << " mean " << sum[k] / n);
+        CHECK(std::abs(sum[k] / n) < 0.15);
     }
-    CHECK(delaySum / n == Approx(0.5).margin(0.05));
+    CHECK(delaySum / n == Approx(0.5).margin(0.1));
 }
 
 // I valori golden sono il formato congelato della versione 1: se questo test fallisce, la generazione è
 // cambiata e le sessioni salvate non suonerebbero più uguali. Proteggono la riproducibilità tra Windows,
 // macOS e Linux. Non aggiornarli: aggiungere una nuova versione dell'algoritmo.
-// Tutti i valori sono esattamente rappresentabili in float, quindi il confronto è esatto.
-TEST_CASE("DriftProfile: golden values for version 1", "[profile]")
+// Calcolati con uno script Python indipendente che emula SplitMix64 e l'aritmetica float32 (numpy), validato
+// sul vettore di riferimento di SplitMix64 e sui golden del vecchio formato. Tutti i valori sono
+// esattamente rappresentabili in float, quindi il confronto è esatto.
+TEST_CASE("channelProfile: golden values for version 1", "[profile]")
 {
-    const auto p = DriftProfile::generate(0x0123456789ABCDEFull);
-    const auto& v0 = p.voices[0];
-    CHECK(v0.lowShelfDb == -0x1.51276p-4f);
-    CHECK(v0.lowShelfOct == -0x1.6cd98p-3f);
-    CHECK(v0.highShelfDb == -0x1.d406bap-1f);
-    CHECK(v0.highShelfOct == 0x1.08b6bcp-2f);
-    CHECK(v0.bellDb == 0x1.002d58p-3f);
-    CHECK(v0.bellPos01 == 0x1.9b7192p-1f);
-    CHECK(v0.delay01 == 0x1.a9b98p-2f);
-    CHECK(v0.gainDb == 0x1.358a58p-3f);
-    CHECK(v0.driveSpread == 0x1.ff4aep-5f);
-    CHECK(v0.noiseLevel == -0x1.aa3d04p-1f);
+    const auto c1 = channelProfile(1);
+    CHECK(c1.tol.lowShelfDb == 0x1.5aed3cp-2f);
+    CHECK(c1.tol.lowShelfOct == 0x1.02321p-2f);
+    CHECK(c1.tol.highShelfDb == -0x1.702104p-1f);
+    CHECK(c1.tol.highShelfOct == 0x1.93659p-3f);
+    CHECK(c1.tol.bellDb == 0x1.3e192p-5f);
+    CHECK(c1.tol.bellPos01 == 0x1.589dfp-2f);
+    CHECK(c1.tol.delay01 == 0x1.8813bp-2f);
+    CHECK(c1.tol.gainDb == -0x1.cad778p-2f);
+    CHECK(c1.tol.driveSpread == -0x1.29cddp-4f);
+    CHECK(c1.tol.noiseLevel == 0x1.6e2d9p-3f);
+    CHECK(c1.noiseSeed == 0x5982CD53u);
 
-    const auto& v15 = p.voices[15];
-    CHECK(v15.lowShelfDb == -0x1.78975p-3f);
-    CHECK(v15.delay01 == 0x1.6ebb2ep-1f);
-    CHECK(v15.gainDb == 0x1.e81eb4p-1f);
+    const auto c2 = channelProfile(2);
+    CHECK(c2.tol.lowShelfDb == -0x1.0a6accp-1f);
+    CHECK(c2.tol.lowShelfOct == -0x1.e8f7ap-4f);
+    CHECK(c2.tol.highShelfDb == 0x1.19dfap-5f);
+    CHECK(c2.tol.highShelfOct == -0x1.22f30cp-2f);
+    CHECK(c2.tol.bellDb == 0x1.3583bp-2f);
+    CHECK(c2.tol.bellPos01 == 0x1.f965ecp-2f);
+    CHECK(c2.tol.delay01 == 0x1.71164cp-2f);
+    CHECK(c2.tol.gainDb == 0x1.9d6afp-2f);
+    CHECK(c2.tol.driveSpread == -0x1.4481c8p-1f);
+    CHECK(c2.tol.noiseLevel == 0x1.2aa44ap-1f);
+    CHECK(c2.noiseSeed == 0x9233D9B5u);
 
-    CHECK(p.noiseSeeds[0] == 0x997F31F9u);
-    CHECK(p.noiseSeeds[15] == 0x7D9A0481u);
+    const auto c64 = channelProfile(64);
+    CHECK(c64.tol.lowShelfDb == 0x1.43e5ap-2f);
+    CHECK(c64.tol.lowShelfOct == -0x1.11b2e8p-2f);
+    CHECK(c64.tol.highShelfDb == 0x1.3eadb6p-1f);
+    CHECK(c64.tol.highShelfOct == 0x1.04e6fp-3f);
+    CHECK(c64.tol.bellDb == -0x1.ca106cp-2f);
+    CHECK(c64.tol.bellPos01 == 0x1.4e2128p-1f);
+    CHECK(c64.tol.delay01 == 0x1.935262p-1f);
+    CHECK(c64.tol.gainDb == -0x1.a80fd4p-2f);
+    CHECK(c64.tol.driveSpread == -0x1.37648ep-1f);
+    CHECK(c64.tol.noiseLevel == -0x1.2899fap-1f);
+    CHECK(c64.noiseSeed == 0x8364A78Bu);
 }
 
-TEST_CASE("DriftProfile: unknown versions behave like the current one", "[profile]")
+TEST_CASE("channelProfile: channel numbers are limited to 1..64", "[profile]")
 {
-    const auto ref = DriftProfile::generate(42, 1);
-    CHECK(identical(DriftProfile::generate(42, 0), ref));
-    CHECK(identical(DriftProfile::generate(42, 99), ref));
-    CHECK(identical(DriftProfile::generate(42, -3), ref));
-    CHECK(identical(DriftProfile::generate(42), ref));
+    CHECK(identical(channelProfile(0), channelProfile(1)));
+    CHECK(identical(channelProfile(-7), channelProfile(1)));
+    CHECK(identical(channelProfile(65), channelProfile(64)));
+    CHECK(identical(channelProfile(100000), channelProfile(64)));
 }
 
-TEST_CASE("DriftProfile::lerp interpolates field by field", "[profile]")
+TEST_CASE("channelProfile: unknown versions behave like the current one", "[profile]")
 {
-    const auto a = DriftProfile::generate(1);
-    const auto b = DriftProfile::generate(2);
+    const auto ref = channelProfile(17, 1);
+    CHECK(identical(channelProfile(17, 0), ref));
+    CHECK(identical(channelProfile(17, 99), ref));
+    CHECK(identical(channelProfile(17, -3), ref));
+    CHECK(identical(channelProfile(17), ref));
+}
+
+TEST_CASE("lerp interpolates field by field", "[profile]")
+{
+    const auto a = channelProfile(1).tol;
+    const auto b = channelProfile(2).tol;
 
     SECTION("endpoints are exact")
     {
-        const auto r0 = DriftProfile::lerp(a, b, 0.0f);
-        const auto r1 = DriftProfile::lerp(a, b, 1.0f);
-        for (size_t v = 0; v < a.voices.size(); ++v)
-        {
-            for (auto f : kAllFields)
-            {
-                CHECK(r0.voices[v].*f == a.voices[v].*f);
-                CHECK(r1.voices[v].*f == b.voices[v].*f);
-            }
-        }
+        CHECK(identical(lerp(a, b, 0.0f), a));
+        CHECK(identical(lerp(a, b, 1.0f), b));
     }
 
     SECTION("midpoint")
     {
-        const auto r = DriftProfile::lerp(a, b, 0.5f);
-        for (size_t v = 0; v < a.voices.size(); ++v)
+        const auto r = lerp(a, b, 0.5f);
+        for (auto f : kAllFields)
         {
-            for (auto f : kAllFields)
-            {
-                const float mid = 0.5f * (a.voices[v].*f + b.voices[v].*f);
-                CHECK(r.voices[v].*f == Approx(mid).margin(1e-6));
-            }
+            CHECK(r.*f == Approx(0.5f * (a.*f + b.*f)).margin(1e-6));
         }
     }
 
-    SECTION("t is clamped")
+    SECTION("t is clamped and NaN counts as 0")
     {
-        const auto lo = DriftProfile::lerp(a, b, -3.0f);
-        const auto hi = DriftProfile::lerp(a, b, 7.0f);
-        for (size_t v = 0; v < a.voices.size(); ++v)
-        {
-            for (auto f : kAllFields)
-            {
-                CHECK(lo.voices[v].*f == a.voices[v].*f);
-                CHECK(hi.voices[v].*f == b.voices[v].*f);
-            }
-        }
-    }
-
-    SECTION("seed and noise seeds come from b")
-    {
-        const auto r = DriftProfile::lerp(a, b, 0.0f);
-        CHECK(r.seed == b.seed);
-        CHECK(r.noiseSeeds == b.noiseSeeds);
+        CHECK(identical(lerp(a, b, -3.0f), a));
+        CHECK(identical(lerp(a, b, 7.0f), b));
+        CHECK(identical(lerp(a, b, std::nanf("")), a));
     }
 }

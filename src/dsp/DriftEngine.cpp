@@ -37,10 +37,10 @@ void smoothStep(float& value, float target, float coeff) noexcept
     }
 }
 
-// Numero di voci valido: pari, tra 2 e kMaxVoices (i valori previsti sono 2, 4, 8, 16).
-int validVoices(int n) noexcept
+// Numero di canale valido: 1..kNumConsoleChannels.
+int validChannel(int c) noexcept
 {
-    return clampTo(n, 2, kMaxVoices) & ~1;
+    return clampTo(c, 1, kNumConsoleChannels);
 }
 } // namespace
 
@@ -49,35 +49,23 @@ void DriftEngine::prepare(double sampleRate, int maxBlockSize, int numChannels)
     sampleRate_ = sampleRate;
     maxBlock_ = maxBlockSize;
     numChannels_ = numChannels <= 1 ? 1 : 2; // oltre 2 canali si elaborano solo i primi 2
-    for (auto& v : voices_)
+    for (auto& s : sides_)
     {
-        v.prepare(sampleRate);
+        s.chain.prepare(sampleRate);
     }
-    // Il profilo vale fin da subito anche con il seed iniziale (che può essere 0).
-    profile_ = DriftProfile::generate(seed_);
-    toProfile_ = profile_;
-    fading_ = false;
-    applyNoiseSeeds(profile_);
     reset();
 }
 
 void DriftEngine::reset() noexcept
 {
-    // Un eventuale crossfade del profilo in corso viene concluso.
-    if (fading_)
+    for (auto& s : sides_)
     {
-        profile_ = toProfile_;
-        fading_ = false;
-    }
-    fadePos_ = 0.0f;
-    for (auto& v : voices_)
-    {
-        v.reset();
+        s.chain.reset();
+        s.fading = false;
+        s.fadePos = 0.0f;
     }
     fresh_ = true;
-    voicesIdle_ = false;
-    targetVoices_ = 0;
-    rampPos_ = 1.0f;
+    chainsIdle_ = false;
 }
 
 void DriftEngine::setSettings(const EngineSettings& settings) noexcept
@@ -85,59 +73,17 @@ void DriftEngine::setSettings(const EngineSettings& settings) noexcept
     settings_ = settings;
 }
 
-void DriftEngine::applyNoiseSeeds(const DriftProfile& profile) noexcept
+int DriftEngine::channelOf(int side) const noexcept
 {
-    for (size_t v = 0; v < voices_.size(); ++v)
-    {
-        voices_[v].setNoiseSeed(profile.noiseSeeds[v]);
-    }
+    return side == 1 ? sides_[1].channel : sides_[0].channel;
 }
 
-void DriftEngine::setSeed(std::uint64_t seed, bool crossfade) noexcept
+bool DriftEngine::isFading(int side) const noexcept
 {
-    if (seed == seed_)
-    {
-        return;
-    }
-    seed_ = seed;
-
-    if (!crossfade || fresh_)
-    {
-        // Cambio immediato: nuovo profilo, nuovi seed del rumore e voci ripartite da stato pulito.
-        profile_ = DriftProfile::generate(seed);
-        toProfile_ = profile_;
-        fading_ = false;
-        applyNoiseSeeds(profile_);
-        for (auto& v : voices_)
-        {
-            v.reset();
-        }
-        return;
-    }
-
-    // Crossfade: si parte dal profilo effettivo corrente (anche se un fade era già in corso).
-    fromProfile_ = profile_;
-    toProfile_ = DriftProfile::generate(seed);
-    fadePos_ = 0.0f;
-    fading_ = true;
-    // I generatori di rumore passano subito ai nuovi seed, senza toccare lo stato dei filtri.
-    applyNoiseSeeds(toProfile_);
+    return side == 1 ? sides_[1].fading : sides_[0].fading;
 }
 
-void DriftEngine::computeTargetWeights() noexcept
-{
-    const int n = validVoices(settings_.numVoices);
-    const float w = 2.0f / static_cast<float>(n);
-    for (int v = 0; v < kMaxVoices; ++v)
-    {
-        // In mono le voci dispari (lato 1) non esistono: le pari pesano 1 / (N / 2) = 2 / N.
-        const bool active = v < n && (numChannels_ == 2 || (v & 1) == 0);
-        targetWeights_[static_cast<size_t>(v)] = active ? w : 0.0f;
-    }
-    targetVoices_ = n;
-}
-
-void DriftEngine::advanceControl(int n) noexcept
+void DriftEngine::advanceControl(int numCh, int n) noexcept
 {
     const double sr = sampleRate_;
     const float dn = static_cast<float>(n);
@@ -164,54 +110,49 @@ void DriftEngine::advanceControl(int n) noexcept
         smoothStep(smooth_.noise, noise, a);
     }
 
-    // --- Crossfade del profilo dopo Randomize ---
-    if (fading_)
+    // --- Tolleranze: un profilo fisso per canale, crossfade al cambio ---
+    const std::array<int, 2> wanted{validChannel(settings_.channelL), validChannel(settings_.channelR)};
+    for (int s = 0; s < numCh; ++s)
     {
-        fadePos_ += dn / static_cast<float>(sr * kProfileFadeSeconds);
-        if (fadePos_ >= 1.0f)
+        auto& side = sides_[static_cast<size_t>(s)];
+        const int target = wanted[static_cast<size_t>(s)];
+        if (fresh_ || target != side.channel)
         {
-            profile_ = toProfile_;
-            fading_ = false;
-        }
-        else
-        {
-            profile_ = DriftProfile::lerp(fromProfile_, toProfile_, fadePos_);
-        }
-    }
-
-    // --- Pesi delle voci: rampa con un'unica posizione per tutte ---
-    if (fresh_ || validVoices(settings_.numVoices) != targetVoices_)
-    {
-        computeTargetWeights();
-        if (fresh_)
-        {
-            weights_ = targetWeights_;
-            rampPos_ = 1.0f;
-        }
-        else
-        {
-            startWeights_ = weights_; // dai pesi correnti, anche a rampa in corso
-            rampPos_ = 0.0f;
-        }
-    }
-    w0_ = weights_;
-    if (rampPos_ < 1.0f)
-    {
-        rampPos_ += dn / static_cast<float>(sr * kVoiceRampSeconds);
-        if (rampPos_ >= 1.0f)
-        {
-            rampPos_ = 1.0f;
-            weights_ = targetWeights_; // alla fine della rampa i pesi sono esattamente i target
-        }
-        else
-        {
-            for (size_t v = 0; v < weights_.size(); ++v)
+            const ChannelProfile profile = channelProfile(target);
+            side.channel = target;
+            // Il generatore di rumore passa subito al nuovo seed, senza toccare lo stato dei filtri.
+            side.chain.setNoiseSeed(profile.noiseSeed);
+            if (fresh_)
             {
-                weights_[v] = startWeights_[v] + (targetWeights_[v] - startWeights_[v]) * rampPos_;
+                // Nessun fade: i valori sono i target e il rumore riparte dal seed del canale.
+                side.cur = profile.tol;
+                side.to = profile.tol;
+                side.fading = false;
+                side.chain.reset();
+            }
+            else
+            {
+                // Si parte dal valore effettivo corrente, anche se un fade era già in corso.
+                side.from = side.cur;
+                side.to = profile.tol;
+                side.fadePos = 0.0f;
+                side.fading = true;
+            }
+        }
+        if (side.fading)
+        {
+            side.fadePos += dn / static_cast<float>(sr * kProfileFadeSeconds);
+            if (side.fadePos >= 1.0f)
+            {
+                side.cur = side.to;
+                side.fading = false;
+            }
+            else
+            {
+                side.cur = lerp(side.from, side.to, side.fadePos);
             }
         }
     }
-    w1_ = weights_;
 }
 
 void DriftEngine::processChunk(float* const* ch, int numCh, int n) noexcept
@@ -228,7 +169,7 @@ void DriftEngine::processChunk(float* const* ch, int numCh, int n) noexcept
         }
     }
 
-    advanceControl(n);
+    advanceControl(numCh, n);
 
     // --- Bypass: wetMix da 1 a 0 (o viceversa) con rampa lineare ---
     const float wetTarget = settings_.bypass ? 0.0f : 1.0f;
@@ -267,48 +208,30 @@ void DriftEngine::processChunk(float* const* ch, int numCh, int n) noexcept
         {
             a.fill(0.0f);
         }
-        if (voicesIdle_)
+        if (chainsIdle_)
         {
             // Ripresa dopo un bypass stabile: stato pulito prima che wetMix salga.
-            for (auto& v : voices_)
+            for (auto& side : sides_)
             {
-                v.reset();
+                side.chain.reset();
             }
-            voicesIdle_ = false;
+            chainsIdle_ = false;
         }
-
-        // Compensazione del rumore per lato: 1 / sqrt(somma dei pesi al quadrato) con i pesi correnti
-        // (a metà sotto-blocco), così il livello resta continuo anche durante le rampe.
-        std::array<float, 2> sumSq{0.0f, 0.0f};
-        for (size_t v = 0; v < voices_.size(); ++v)
-        {
-            const float w = 0.5f * (w0_[v] + w1_[v]);
-            sumSq[v & 1] += w * w;
-        }
-        const std::array<float, 2> noiseScale{sumSq[0] > 0.0f ? 1.0f / std::sqrt(sumSq[0]) : 1.0f,
-                                              sumSq[1] > 0.0f ? 1.0f / std::sqrt(sumSq[1]) : 1.0f};
 
         const VoiceAmounts amounts{smooth_.drift * smooth_.freqTol, smooth_.drift * smooth_.phaseTol,
                                    smooth_.drift * smooth_.gainTol, smooth_.drift * smooth_.saturation,
                                    smooth_.drift * smooth_.noise};
-        for (size_t v = 0; v < voices_.size(); ++v)
+        for (int c = 0; c < numCh; ++c)
         {
-            const size_t side = v & 1;
-            if ((w0_[v] == 0.0f && w1_[v] == 0.0f) || static_cast<int>(side) >= numCh)
-            {
-                continue; // peso 0: la voce non viene elaborata
-            }
-            if (w0_[v] == 0.0f)
-            {
-                voices_[v].reset(); // la voce riparte da stato pulito
-            }
-            voices_[v].update(profile_.voices[v], amounts, noiseScale[side]);
-            voices_[v].processAdd(in_[side].data(), acc_[side].data(), n, w0_[v], w1_[v]);
+            auto& side = sides_[static_cast<size_t>(c)];
+            side.chain.update(side.cur, amounts, 1.0f);
+            side.chain.processAdd(in_[static_cast<size_t>(c)].data(), acc_[static_cast<size_t>(c)].data(), n,
+                                  1.0f, 1.0f);
         }
     }
     else
     {
-        voicesIdle_ = true; // bypass stabile: uscita = dry esatto, voci ferme
+        chainsIdle_ = true; // bypass stabile: uscita = dry esatto, catene ferme
     }
 
     // --- Uscita: Output Gain, ceiling, sanitizzazione, miscela di bypass ---
@@ -371,10 +294,5 @@ void DriftEngine::process(juce::AudioBuffer<float>& buffer) noexcept
     meters_.inPeakDb.store(gainToDb(blockInPeak_), std::memory_order_relaxed);
     meters_.outPeakDb.store(gainToDb(blockOutPeak_), std::memory_order_relaxed);
     meters_.ceilingActive.store(blockCeiling_, std::memory_order_relaxed);
-}
-
-float DriftEngine::voiceWeight(int v) const noexcept
-{
-    return v >= 0 && v < kMaxVoices ? weights_[static_cast<size_t>(v)] : 0.0f;
 }
 } // namespace driftbox

@@ -12,31 +12,9 @@ namespace
 {
 const juce::Identifier kStateVersionProp{"stateVersion"};
 const juce::Identifier kProfileVersionProp{"profileVersion"};
-const juce::Identifier kDriftSeedProp{"driftSeed"};
+const juce::Identifier kLegacySeedProp{"driftSeed"};
 const juce::Identifier kUiWidthProp{"uiWidth"};
 const juce::Identifier kUiHeightProp{"uiHeight"};
-
-// Seed come stringa esadecimale di 16 cifre minuscole (sempre 16, con zeri iniziali).
-juce::String seedToHex(std::uint64_t seed)
-{
-    return juce::String::formatted("%016llx", static_cast<unsigned long long>(seed));
-}
-
-// Da stringa esadecimale di 1-16 cifre (maiuscole o minuscole) al seed; false se mancante o malformata.
-bool seedFromHex(const juce::var& v, std::uint64_t& out)
-{
-    if (!v.isString())
-    {
-        return false;
-    }
-    const auto s = v.toString();
-    if (s.isEmpty() || s.length() > 16 || !s.containsOnly("0123456789abcdefABCDEF"))
-    {
-        return false;
-    }
-    out = static_cast<std::uint64_t>(s.getHexValue64());
-    return true;
-}
 
 // Un cambio di parametro registrato. perform() viene eseguito quando il passo è registrato (il parametro ha
 // già il nuovo valore, quindi non fa nulla) e al redo; undo() ripristina il vecchio valore. I valori sono
@@ -69,33 +47,6 @@ private:
     float old_, new_;
 };
 } // namespace
-
-// Passo di undo di Randomize. Il seed non è un parametro, quindi serve un'azione dedicata: perform() imposta
-// il nuovo seed (alla registrazione e al redo), undo() ripristina il vecchio. Entrambi con crossfade, mai
-// con snap: un cambio di seed fatto dall'utente non deve produrre click.
-class DriftboxAudioProcessor::SeedChangeAction final : public juce::UndoableAction
-{
-public:
-    SeedChangeAction(DriftboxAudioProcessor& p, std::uint64_t oldSeed, std::uint64_t newSeed)
-        : processor_(p), old_(oldSeed), new_(newSeed)
-    {
-    }
-    bool perform() override
-    {
-        processor_.setSeed(new_);
-        return true;
-    }
-    bool undo() override
-    {
-        processor_.setSeed(old_);
-        return true;
-    }
-    int getSizeInUnits() override { return 1; }
-
-private:
-    DriftboxAudioProcessor& processor_;
-    std::uint64_t old_, new_;
-};
 
 // Registra i gesti sui parametri della UI del plugin come passi di undo.
 //
@@ -151,7 +102,8 @@ private:
             {
                 return;
             }
-            if (depth_ == 0)
+            // Dentro randomize() la transazione "Randomize" è già aperta: un nome nuovo la rinominerebbe.
+            if (depth_ == 0 && !processor_.randomizing_)
             {
                 um_.beginNewTransaction(param->getName(64));
             }
@@ -190,9 +142,16 @@ DriftboxAudioProcessor::DriftboxAudioProcessor()
 {
     // L'APVTS non riceve un UndoManager di proposito, vedi UndoRecorder.
     undoRecorder_ = std::make_unique<UndoRecorder>(*this, undoManager_);
-    // Ogni nuova istanza parte con tolleranze proprie; uno stato salvato le sostituisce.
-    seed_.store(static_cast<std::uint64_t>(juce::Random::getSystemRandom().nextInt64()),
-                std::memory_order_release);
+    // Ogni nuova istanza parte con una coppia di canali a caso, così due istanze nuove non suonano uguali per
+    // caso; uno stato salvato la sostituisce. Il default dei parametri resta 1 / 2. I valori sono impostati
+    // senza gesti: nessun passo di undo (la cronologia si svuota comunque).
+    const auto [l, r] = drawChannelPair();
+    for (const auto& [id, value] : {std::pair{pid::chanL, l}, std::pair{pid::chanR, r}})
+    {
+        auto* param = apvts_.getParameter(id);
+        param->setValueNotifyingHost(param->convertTo0to1(static_cast<float>(value)));
+    }
+    undoManager_.clearUndoHistory();
     startTimerHz(30);
 }
 
@@ -201,23 +160,36 @@ DriftboxAudioProcessor::~DriftboxAudioProcessor()
     stopTimer();
 }
 
-void DriftboxAudioProcessor::setSeed(std::uint64_t seed) noexcept
+std::pair<int, int> DriftboxAudioProcessor::drawChannelPair() const
 {
-    seed_.store(seed, std::memory_order_release);
+    const int curL = juce::roundToInt(params_.chanL->load());
+    const int curR = juce::roundToInt(params_.chanR->load());
+    int l = curL, r = curR;
+    while (l == curL && r == curR)
+    {
+        l = juce::Random::getSystemRandom().nextInt(kNumConsoleChannels) + 1;
+        r = l % kNumConsoleChannels + 1;
+    }
+    return {l, r};
 }
 
 void DriftboxAudioProcessor::randomize()
 {
     jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
-    const auto oldSeed = getSeed();
-    std::uint64_t newSeed = oldSeed;
-    while (newSeed == oldSeed)
-    {
-        newSeed = static_cast<std::uint64_t>(juce::Random::getSystemRandom().nextInt64());
-    }
-    // Un solo passo: perform() imposta subito il nuovo seed.
+    const auto [l, r] = drawChannelPair();
+    auto* pL = apvts_.getParameter(pid::chanL);
+    auto* pR = apvts_.getParameter(pid::chanR);
+
+    // Un solo passo: i due gesti annidati vengono uniti dal recorder nella transazione "Randomize".
     undoManager_.beginNewTransaction("Randomize");
-    undoManager_.perform(new SeedChangeAction(*this, oldSeed, newSeed));
+    randomizing_ = true;
+    pL->beginChangeGesture();
+    pR->beginChangeGesture();
+    pL->setValueNotifyingHost(pL->convertTo0to1(static_cast<float>(l)));
+    pR->setValueNotifyingHost(pR->convertTo0to1(static_cast<float>(r)));
+    pL->endChangeGesture();
+    pR->endChangeGesture();
+    randomizing_ = false;
 }
 
 void DriftboxAudioProcessor::clearUndoHistory()
@@ -257,8 +229,6 @@ void DriftboxAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBloc
     currentSampleRate_ = sampleRate;
     engine_.prepare(sampleRate, samplesPerBlock, juce::jmax(1, getTotalNumOutputChannels()));
     engine_.setSettings(params_.snapshot());
-    engine_.setSeed(getSeed(), false);
-    seedSnapPending_.store(false, std::memory_order_release); // il seed vale già, senza crossfade
 }
 
 void DriftboxAudioProcessor::releaseResources() {}
@@ -283,9 +253,6 @@ void DriftboxAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
     }
 
     engine_.setSettings(params_.snapshot());
-    // Dopo un ripristino dello stato il seed si applica subito (snap); un Randomize passa dal crossfade.
-    const bool snap = seedSnapPending_.exchange(false, std::memory_order_acq_rel);
-    engine_.setSeed(getSeed(), !snap);
     engine_.process(buffer);
 
     // Frazione smussata del tempo del blocco spesa qui (economico, realtime safe).
@@ -315,7 +282,6 @@ void DriftboxAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     auto state = apvts_.copyState();
     state.setProperty(kStateVersionProp, kStateVersion, nullptr);
     state.setProperty(kProfileVersionProp, kProfileVersion, nullptr);
-    state.setProperty(kDriftSeedProp, seedToHex(getSeed()), nullptr);
     if (auto xml = state.createXml())
     {
         copyXmlToBinary(*xml, destData);
@@ -348,30 +314,22 @@ void DriftboxAudioProcessor::setStateInformation(const void* data, int sizeInByt
         return;
     }
 
-    // Versione del generatore del profilo: per ora esiste solo la 1 (kProfileVersion), quindi non c'è nulla
-    // da migrare. Una versione mancante vale 1; una più recente del plugin viene rifiutata come
-    // stateVersion, perché lo stesso seed darebbe tolleranze diverse.
+    // Versione del generatore dei profili di canale: per ora esiste solo la 1 (kProfileVersion), quindi non
+    // c'è nulla da migrare. Una versione mancante vale 1; una più recente del plugin viene rifiutata come
+    // stateVersion, perché lo stesso numero di canale darebbe tolleranze diverse. La proprietà non resta
+    // nell'albero dell'APVTS: getStateInformation() la riscrive.
     const int profileVersion = static_cast<int>(tree.getProperty(kProfileVersionProp, 1));
     if (profileVersion > kProfileVersion)
     {
         return;
     }
-
-    // Seed mancante o malformato: il seed corrente resta invariato. Le due proprietà non restano
-    // nell'albero dell'APVTS: getStateInformation() le riscrive dal seed vivo.
-    std::uint64_t seed = 0;
-    const bool haveSeed = seedFromHex(tree.getProperty(kDriftSeedProp), seed);
-    tree.removeProperty(kDriftSeedProp, nullptr);
     tree.removeProperty(kProfileVersionProp, nullptr);
+    // Gli stati delle build di sviluppo con il vecchio modello a seed portano ancora questa proprietà: si
+    // scarta, così non viene riscritta all'infinito.
+    tree.removeProperty(kLegacySeedProp, nullptr);
 
     migrateState(tree, version);
     apvts_.replaceState(tree);
-    if (haveSeed)
-    {
-        // Prima il seed, poi il flag: l'audio thread che vede il flag vede anche il seed nuovo.
-        seed_.store(seed, std::memory_order_release);
-        seedSnapPending_.store(true, std::memory_order_release);
-    }
     clearUndoHistory(); // l'intero stato è stato sostituito: i passi precedenti non valgono più
 }
 

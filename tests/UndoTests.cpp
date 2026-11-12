@@ -4,6 +4,9 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <utility>
+#include <vector>
+
 using namespace driftbox;
 using Catch::Approx;
 
@@ -136,7 +139,7 @@ TEST_CASE("Undo: changes made by the host without a gesture are not recorded", "
     CHECK(um.getNumberOfUnitsTakenUpByStoredCommands() == 0);
 }
 
-TEST_CASE("Undo: toggles and choices", "[undo]")
+TEST_CASE("Undo: toggles and integer channels", "[undo]")
 {
     DriftboxAudioProcessor p;
     auto& um = p.getUndoManager();
@@ -151,73 +154,115 @@ TEST_CASE("Undo: toggles and choices", "[undo]")
     CHECK(raw(p, pid::bypass) > 0.5f);
     um.clearUndoHistory();
 
-    gesture(p, pid::channels, 3.0f);
-    CHECK(raw(p, pid::channels) == Approx(3.0f));
+    automate(p, pid::chanL, 20.0f); // valore di partenza noto (la coppia iniziale è casuale)
+    gesture(p, pid::chanL, 33.0f);
+    CHECK(raw(p, pid::chanL) == Approx(33.0f));
     CHECK(um.undo());
-    CHECK(raw(p, pid::channels) == Approx(static_cast<float>(kDefaultChannelIndex)));
+    CHECK(raw(p, pid::chanL) == Approx(20.0f));
+    CHECK(um.redo());
+    CHECK(raw(p, pid::chanL) == Approx(33.0f));
+}
+
+namespace
+{
+std::pair<int, int> channels(DriftboxAudioProcessor& p)
+{
+    return {static_cast<int>(raw(p, pid::chanL)), static_cast<int>(raw(p, pid::chanR))};
+}
+} // namespace
+
+TEST_CASE("Undo: the constructor leaves no step in the history", "[undo]")
+{
+    for (int i = 0; i < 5; ++i)
+    {
+        DriftboxAudioProcessor p;
+        CHECK_FALSE(p.getUndoManager().canUndo());
+        CHECK_FALSE(p.getUndoManager().canRedo());
+        CHECK(p.getUndoManager().getNumberOfUnitsTakenUpByStoredCommands() == 0);
+    }
 }
 
 TEST_CASE("Undo: Randomize is one step named Randomize", "[undo]")
 {
     DriftboxAudioProcessor p;
     auto& um = p.getUndoManager();
-    const auto before = p.getSeed();
+    automate(p, pid::chanL, 10.0f);
+    automate(p, pid::chanR, 30.0f);
+    const auto before = channels(p);
 
     p.randomize();
-    const auto after = p.getSeed();
+    const auto after = channels(p);
     CHECK(after != before);
+    CHECK(after.second == after.first % 64 + 1);
+    // UN passo, con il nome giusto: i due gesti annidati (L e R) sono uniti dal recorder.
     REQUIRE(um.getUndoDescriptions().size() == 1);
     CHECK(um.getUndoDescription() == "Randomize");
 
     CHECK(um.undo());
-    CHECK(p.getSeed() == before);
+    CHECK(channels(p) == before);
     CHECK_FALSE(um.canUndo());
     CHECK(um.canRedo());
     CHECK(um.getRedoDescription() == "Randomize");
 
     CHECK(um.redo());
-    CHECK(p.getSeed() == after);
+    CHECK(channels(p) == after);
     CHECK(um.canUndo());
     CHECK_FALSE(um.canRedo());
 }
 
-TEST_CASE("Undo: each Randomize is its own step and the seed always changes", "[undo]")
+TEST_CASE("Undo: each Randomize is its own step and the pair always changes", "[undo]")
 {
     DriftboxAudioProcessor p;
     auto& um = p.getUndoManager();
-    const auto s0 = p.getSeed();
-    p.randomize();
-    const auto s1 = p.getSeed();
-    p.randomize();
-    const auto s2 = p.getSeed();
-    CHECK(s1 != s0);
-    CHECK(s2 != s1);
-    CHECK(um.getUndoDescriptions().size() == 2);
+    auto prev = channels(p);
+    std::vector<std::pair<int, int>> history{prev};
+    for (int i = 0; i < 30; ++i)
+    {
+        p.randomize();
+        const auto now = channels(p);
+        CHECK(now != prev);
+        CHECK(now.second == now.first % 64 + 1);
+        history.push_back(now);
+        prev = now;
+    }
+    CHECK(um.getUndoDescriptions().size() == 30);
 
-    um.undo();
-    CHECK(p.getSeed() == s1);
-    um.undo();
-    CHECK(p.getSeed() == s0);
+    for (size_t i = history.size() - 1; i > 0; --i)
+    {
+        REQUIRE(channels(p) == history[i]);
+        um.undo();
+    }
+    CHECK(channels(p) == history[0]);
 }
 
 TEST_CASE("Undo: Randomize and parameter gestures share one history", "[undo]")
 {
     DriftboxAudioProcessor p;
     auto& um = p.getUndoManager();
-    const auto s0 = p.getSeed();
+    const auto c0 = channels(p);
     gesture(p, pid::drift, 0.9f);
     p.randomize();
-    const auto s1 = p.getSeed();
+    const auto c1 = channels(p);
 
     um.undo();
-    CHECK(p.getSeed() == s0);
+    CHECK(channels(p) == c0);
     CHECK(raw(p, pid::drift) == Approx(0.9f));
     um.undo();
     CHECK(raw(p, pid::drift) == Approx(0.5f));
     um.redo();
     um.redo();
-    CHECK(p.getSeed() == s1);
+    CHECK(channels(p) == c1);
     CHECK(raw(p, pid::drift) == Approx(0.9f));
+}
+
+TEST_CASE("Undo: a UI gesture after Randomize gets its own name", "[undo]")
+{
+    DriftboxAudioProcessor p;
+    p.randomize();
+    gesture(p, pid::drift, 0.9f);
+    auto& um = p.getUndoManager();
+    REQUIRE(um.getUndoDescriptions().size() == 2);
+    CHECK(um.getUndoDescription() == "Drift Amount");
 }
 
 TEST_CASE("Undo: restoring a state clears the history", "[undo]")

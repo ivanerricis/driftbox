@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <new>
 #include <random>
+#include <utility>
 
 namespace
 {
@@ -146,7 +147,7 @@ void setParam(DriftboxAudioProcessor& p, const char* id, float normalised)
     p.getAPVTS().getParameter(id)->setValueNotifyingHost(normalised);
 }
 
-// Cambia tutti i parametri (come farebbe l'automazione), escluso bypass e channels se richiesto.
+// Cambia tutti i parametri (come farebbe l'automazione), escluso bypass e i canali L/R se richiesto.
 void randomiseParams(DriftboxAudioProcessor& p, std::mt19937& gen, bool includeChannels)
 {
     std::uniform_real_distribution<float> u(0.0f, 1.0f);
@@ -156,10 +157,16 @@ void randomiseParams(DriftboxAudioProcessor& p, std::mt19937& gen, bool includeC
         if (withID == nullptr)
             continue;
         const auto id = withID->getParameterID();
-        if (id == pid::bypass || (!includeChannels && id == pid::channels))
+        if (id == pid::bypass || (!includeChannels && (id == pid::chanL || id == pid::chanR)))
             continue;
         param->setValueNotifyingHost(u(gen));
     }
+}
+
+// Valore normalizzato del parametro intero 1..64.
+float normalisedChannel(int channel)
+{
+    return static_cast<float>(channel - 1) / static_cast<float>(kNumConsoleChannels - 1);
 }
 
 constexpr int kMaxBlock = 4096;
@@ -228,12 +235,13 @@ TEST_CASE("The allocation counter sees heap allocations", "[allocation]")
 
 TEST_CASE("processBlock does not allocate at steady state", "[allocation]")
 {
-    for (int choice = 0; choice < 4; ++choice)
+    for (const auto& [l, r] : {std::pair{1, 2}, std::pair{17, 17}, std::pair{64, 1}})
     {
-        DYNAMIC_SECTION("channels choice " << choice)
+        DYNAMIC_SECTION("channels " << l << " / " << r)
         {
             Rig rig(512);
-            setParam(rig.proc, pid::channels, static_cast<float>(choice) / 3.0f);
+            setParam(rig.proc, pid::chanL, normalisedChannel(l));
+            setParam(rig.proc, pid::chanR, normalisedChannel(r));
             setParam(rig.proc, pid::noise, 1.0f);
             setParam(rig.proc, pid::saturation, 0.5f);
             for (int i = 0; i < 20; ++i) // riscaldamento
@@ -247,25 +255,28 @@ TEST_CASE("processBlock does not allocate at steady state", "[allocation]")
     }
 }
 
-TEST_CASE("Switching the channel count between 2 and 16 does not allocate", "[allocation]")
+TEST_CASE("Changing the channels does not allocate", "[allocation]")
 {
     Rig rig(512);
     for (int i = 0; i < 10; ++i)
         rig.processCounted(512);
 
     std::size_t total = 0;
-    for (int i = 0; i < 60; ++i)
+    for (int i = 0; i < 120; ++i)
     {
-        // Il parametro cambia fuori dalla sezione misurata, come l'host; la rampa dei pesi si estende
-        // su più blocchi.
-        if (i % 6 == 0)
-            setParam(rig.proc, pid::channels, (i / 6) % 2 == 0 ? 0.0f : 1.0f); // 2 <-> 16 voci
+        // Il parametro cambia fuori dalla sezione misurata, come l'host; il fade si estende su più blocchi
+        // e a volte un nuovo cambio arriva a fade in corso.
+        if (i % 4 == 0)
+        {
+            setParam(rig.proc, pid::chanL, normalisedChannel(1 + (i * 7) % 64));
+            setParam(rig.proc, pid::chanR, normalisedChannel(1 + (i * 13 + 5) % 64));
+        }
         total += rig.processCounted(512);
     }
     CHECK(total == 0);
 }
 
-TEST_CASE("The Randomize crossfade does not allocate", "[allocation]")
+TEST_CASE("Randomize and its crossfade do not allocate", "[allocation]")
 {
     Rig rig(512);
     setParam(rig.proc, pid::noise, 1.0f);
@@ -276,7 +287,7 @@ TEST_CASE("The Randomize crossfade does not allocate", "[allocation]")
     for (int i = 0; i < 120; ++i)
     {
         if (i % 10 == 0)
-            rig.proc.randomize(); // FUORI dalla sezione misurata (alloca l'azione di undo)
+            rig.proc.randomize(); // FUORI dalla sezione misurata (alloca le azioni di undo)
         total += rig.processCounted(512);
     }
     CHECK(total == 0);
@@ -295,7 +306,8 @@ TEST_CASE("Restoring a state, then processing, does not allocate", "[allocation]
     {
         if (i % 5 == 0)
         {
-            rig.proc.setSeed(1000 + static_cast<std::uint64_t>(i)); // il ripristino cambia davvero il seed
+            setParam(rig.proc, pid::chanL,
+                     normalisedChannel(10 + i)); // il ripristino cambia davvero i canali
             rig.proc.setStateInformation(block.getData(), static_cast<int>(block.getSize()));
         }
         total += rig.processCounted(512);

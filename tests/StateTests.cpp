@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Stato del plugin: round trip (parametri, seed, dimensione UI), formato XML, versioni e stati non validi.
+// Stato del plugin: round trip (parametri, canali L/R, dimensione UI), formato XML, versioni e stati non
+// validi.
 #include "PluginProcessor.h"
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
-#include <cstdint>
 #include <set>
+#include <utility>
 
 using namespace driftbox;
 using Catch::Approx;
@@ -57,17 +58,13 @@ juce::MemoryBlock withAttribute(DriftboxAudioProcessor& src, const char* name, c
     juce::AudioProcessor::copyXmlToBinary(*xml, out);
     return out;
 }
-
-juce::String hexOf(std::uint64_t seed)
-{
-    return juce::String::formatted("%016llx", static_cast<unsigned long long>(seed));
-}
 } // namespace
 
 TEST_CASE("State round trip", "[state]")
 {
     DriftboxAudioProcessor a;
-    setValue(a, pid::channels, 3.0f); // indice della scelta: 16 voci
+    setValue(a, pid::chanL, 37.0f);
+    setValue(a, pid::chanR, 5.0f);
     setValue(a, pid::drift, 0.83f);
     setValue(a, pid::freqTol, 0.31f);
     setValue(a, pid::phaseTol, 0.12f);
@@ -76,7 +73,6 @@ TEST_CASE("State round trip", "[state]")
     setValue(a, pid::noise, 0.66f);
     setValue(a, pid::outGain, -7.5f);
     setValue(a, pid::bypass, 1.0f);
-    a.setSeed(0x0123456789abcdefULL);
     a.setUiSize(1000, 640);
 
     const auto block = saveState(a);
@@ -85,7 +81,8 @@ TEST_CASE("State round trip", "[state]")
     DriftboxAudioProcessor b;
     loadState(b, block);
 
-    CHECK(raw(b, pid::channels) == Approx(raw(a, pid::channels)));
+    CHECK(raw(b, pid::chanL) == Approx(37.0f));
+    CHECK(raw(b, pid::chanR) == Approx(5.0f));
     CHECK(raw(b, pid::drift) == Approx(raw(a, pid::drift)));
     CHECK(raw(b, pid::freqTol) == Approx(raw(a, pid::freqTol)));
     CHECK(raw(b, pid::phaseTol) == Approx(raw(a, pid::phaseTol)));
@@ -94,41 +91,50 @@ TEST_CASE("State round trip", "[state]")
     CHECK(raw(b, pid::noise) == Approx(raw(a, pid::noise)));
     CHECK(raw(b, pid::outGain) == Approx(-7.5f).margin(0.05f));
     CHECK(raw(b, pid::bypass) == Approx(1.0f));
-    CHECK(b.getSeed() == 0x0123456789abcdefULL);
     CHECK(b.getUiSize().x == 1000);
     CHECK(b.getUiSize().y == 640);
 }
 
-TEST_CASE("State XML carries the seed as 16 hex digits and the profile version", "[state]")
+TEST_CASE("Channel extremes round trip", "[state]")
+{
+    for (const auto& [l, r] : {std::pair{1, 64}, std::pair{64, 1}, std::pair{1, 1}, std::pair{64, 64}})
+    {
+        DriftboxAudioProcessor a;
+        setValue(a, pid::chanL, static_cast<float>(l));
+        setValue(a, pid::chanR, static_cast<float>(r));
+        DriftboxAudioProcessor b;
+        loadState(b, saveState(a));
+        CHECK(raw(b, pid::chanL) == Approx(static_cast<float>(l)));
+        CHECK(raw(b, pid::chanR) == Approx(static_cast<float>(r)));
+    }
+}
+
+TEST_CASE("State XML carries the profile version and no seed", "[state]")
 {
     DriftboxAudioProcessor a;
-    a.setSeed(0x2aULL); // zeri iniziali: devono restare 16 cifre
-
     auto xml = toXml(saveState(a));
     REQUIRE(xml != nullptr);
     CHECK(xml->hasTagName(kStateTag));
     CHECK(xml->getIntAttribute("stateVersion") == kStateVersion);
     CHECK(xml->getIntAttribute("profileVersion") == kProfileVersion);
-    CHECK(xml->getStringAttribute("driftSeed") == "000000000000002a");
+    CHECK_FALSE(xml->hasAttribute("driftSeed"));
+}
 
-    for (std::uint64_t seed : {0x0ULL, 0xffffffffffffffffULL, 0x8000000000000000ULL, 0xdeadbeefcafef00dULL})
-    {
-        a.setSeed(seed);
-        auto x = toXml(saveState(a));
-        REQUIRE(x != nullptr);
-        const auto s = x->getStringAttribute("driftSeed");
-        CHECK(s.length() == 16);
-        CHECK(s == s.toLowerCase());
-        CHECK(s.containsOnly("0123456789abcdef"));
-        CHECK(s == hexOf(seed));
-    }
+TEST_CASE("A legacy driftSeed property is dropped on load", "[state]")
+{
+    DriftboxAudioProcessor src;
+    DriftboxAudioProcessor p;
+    loadState(p, withAttribute(src, "driftSeed", "000000000000002a"));
+    auto xml = toXml(saveState(p));
+    REQUIRE(xml != nullptr);
+    CHECK_FALSE(xml->hasAttribute("driftSeed"));
 }
 
 TEST_CASE("Garbage state is ignored", "[state]")
 {
     DriftboxAudioProcessor p;
     setValue(p, pid::drift, 0.25f);
-    p.setSeed(77);
+    setValue(p, pid::chanL, 9.0f);
 
     SECTION("random bytes")
     {
@@ -144,14 +150,13 @@ TEST_CASE("Garbage state is ignored", "[state]")
     SECTION("valid XML with the wrong tag")
     {
         juce::XmlElement wrong("SOMETHING_ELSE");
-        wrong.setAttribute("driftSeed", "00000000000000ff");
         juce::MemoryBlock mb;
         juce::AudioProcessor::copyXmlToBinary(wrong, mb);
         p.setStateInformation(mb.getData(), static_cast<int>(mb.getSize()));
     }
 
     CHECK(raw(p, pid::drift) == Approx(0.25f));
-    CHECK(p.getSeed() == 77);
+    CHECK(raw(p, pid::chanL) == Approx(9.0f));
 }
 
 TEST_CASE("Future-version state is rejected, old and version-less states load", "[state]")
@@ -159,17 +164,18 @@ TEST_CASE("Future-version state is rejected, old and version-less states load", 
     DriftboxAudioProcessor src;
     setValue(src, pid::drift, 0.9f);
     setValue(src, pid::outGain, -6.0f);
-    src.setSeed(0x1111111111111111ULL);
+    setValue(src, pid::chanL, 40.0f);
+    setValue(src, pid::chanR, 41.0f);
 
-    SECTION("future stateVersion leaves parameters and seed untouched")
+    SECTION("future stateVersion leaves parameters untouched")
     {
         const auto block = withAttribute(src, "stateVersion", juce::String(kStateVersion + 1).toRawUTF8());
         DriftboxAudioProcessor p;
         setValue(p, pid::drift, 0.2f);
-        p.setSeed(5);
+        setValue(p, pid::chanL, 5.0f);
         loadState(p, block);
         CHECK(raw(p, pid::drift) == Approx(0.2f));
-        CHECK(p.getSeed() == 5);
+        CHECK(raw(p, pid::chanL) == Approx(5.0f));
     }
     SECTION("stateVersion 1 loads")
     {
@@ -178,7 +184,8 @@ TEST_CASE("Future-version state is rejected, old and version-less states load", 
         loadState(p, block);
         CHECK(raw(p, pid::drift) == Approx(0.9f));
         CHECK(raw(p, pid::outGain) == Approx(-6.0f).margin(0.05f));
-        CHECK(p.getSeed() == 0x1111111111111111ULL);
+        CHECK(raw(p, pid::chanL) == Approx(40.0f));
+        CHECK(raw(p, pid::chanR) == Approx(41.0f));
     }
     SECTION("missing stateVersion loads as version 1")
     {
@@ -186,7 +193,7 @@ TEST_CASE("Future-version state is rejected, old and version-less states load", 
         DriftboxAudioProcessor p;
         loadState(p, block);
         CHECK(raw(p, pid::drift) == Approx(0.9f));
-        CHECK(p.getSeed() == 0x1111111111111111ULL);
+        CHECK(raw(p, pid::chanL) == Approx(40.0f));
     }
     SECTION("future profileVersion is rejected")
     {
@@ -194,10 +201,12 @@ TEST_CASE("Future-version state is rejected, old and version-less states load", 
             withAttribute(src, "profileVersion", juce::String(kProfileVersion + 1).toRawUTF8());
         DriftboxAudioProcessor p;
         setValue(p, pid::drift, 0.2f);
-        p.setSeed(5);
+        setValue(p, pid::chanL, 5.0f);
+        setValue(p, pid::chanR, 6.0f);
         loadState(p, block);
         CHECK(raw(p, pid::drift) == Approx(0.2f));
-        CHECK(p.getSeed() == 5);
+        CHECK(raw(p, pid::chanL) == Approx(5.0f));
+        CHECK(raw(p, pid::chanR) == Approx(6.0f));
     }
     SECTION("missing profileVersion loads as version 1")
     {
@@ -205,70 +214,22 @@ TEST_CASE("Future-version state is rejected, old and version-less states load", 
         DriftboxAudioProcessor p;
         loadState(p, block);
         CHECK(raw(p, pid::drift) == Approx(0.9f));
-        CHECK(p.getSeed() == 0x1111111111111111ULL);
+        CHECK(raw(p, pid::chanL) == Approx(40.0f));
     }
 }
 
-TEST_CASE("A missing or malformed seed keeps the current one", "[state]")
+TEST_CASE("New instances do not all start with the same channel pair", "[state]")
 {
-    DriftboxAudioProcessor src;
-    setValue(src, pid::drift, 0.9f);
-
-    auto check = [&](const char* value)
-    {
-        const auto block = withAttribute(src, "driftSeed", value);
-        DriftboxAudioProcessor p;
-        p.setSeed(0xabcdefULL);
-        loadState(p, block);
-        CHECK(p.getSeed() == 0xabcdefULL);
-        CHECK(raw(p, pid::drift) == Approx(0.9f)); // il resto dello stato viene caricato
-    };
-
-    SECTION("missing")
-    {
-        check(nullptr);
-    }
-    SECTION("empty")
-    {
-        check("");
-    }
-    SECTION("not hexadecimal")
-    {
-        check("zzzz");
-    }
-    SECTION("hexadecimal with a prefix")
-    {
-        check("0x00000000000000ff");
-    }
-    SECTION("too long")
-    {
-        check("00000000000000000");
-    }
-    SECTION("with spaces")
-    {
-        check("00 000000000000ff");
-    }
-}
-
-TEST_CASE("A short or upper-case seed is accepted", "[state]")
-{
-    DriftboxAudioProcessor src;
-    DriftboxAudioProcessor p;
-
-    loadState(p, withAttribute(src, "driftSeed", "ff"));
-    CHECK(p.getSeed() == 0xffULL);
-
-    loadState(p, withAttribute(src, "driftSeed", "FFFFFFFFFFFFFFFF"));
-    CHECK(p.getSeed() == 0xffffffffffffffffULL);
-}
-
-TEST_CASE("New instances get different seeds", "[state]")
-{
-    std::set<std::uint64_t> seeds;
-    for (int i = 0; i < 8; ++i)
+    // Con 64 coppie possibili, 20 istanze uguali per caso hanno probabilità trascurabile (64^-19).
+    std::set<std::pair<int, int>> pairs;
+    for (int i = 0; i < 20; ++i)
     {
         DriftboxAudioProcessor p;
-        seeds.insert(p.getSeed());
+        const int l = static_cast<int>(raw(p, pid::chanL)), r = static_cast<int>(raw(p, pid::chanR));
+        CHECK(l >= 1);
+        CHECK(l <= 64);
+        CHECK(r == l % 64 + 1);
+        pairs.insert({l, r});
     }
-    CHECK(seeds.size() == 8);
+    CHECK(pairs.size() > 1);
 }

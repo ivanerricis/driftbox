@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Test di accettazione di Driftbox: trasparenza, niente NaN/Inf, cambio canali senza click e niente
-// clipping (T3), stato e seed (T4).
+// Test di accettazione di Driftbox: trasparenza, niente NaN/Inf, cambio di canale senza click, stato
+// bit-identico alla riapertura e niente clipping.
 #include "PluginProcessor.h"
 #include "dsp/DriftEngine.h"
 #include "dsp/DspUtils.h"
@@ -9,6 +9,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -79,11 +80,12 @@ TEST_CASE("Sanitize replaces NaN and Inf", "[dsputils]")
 
 namespace
 {
-EngineSettings makeSettings(int voices, float drift, float tol = 1.0f, float sat = 0.0f, float noise = 0.0f,
-                            float gainDb = 0.0f)
+EngineSettings makeSettings(int chanL, int chanR, float drift, float tol = 1.0f, float sat = 0.0f,
+                            float noise = 0.0f, float gainDb = 0.0f)
 {
     EngineSettings s;
-    s.numVoices = voices;
+    s.channelL = chanL;
+    s.channelR = chanR;
     s.drift01 = drift;
     s.freqTol01 = s.phaseTol01 = s.gainTol01 = tol;
     s.saturation01 = sat;
@@ -106,11 +108,13 @@ void runStereo(DriftEngine& e, test::Signal& l, test::Signal& r, size_t from, si
     }
 }
 
-void prepareEngine(DriftEngine& e, double sr, std::uint64_t seed)
+void prepareEngine(DriftEngine& e, double sr)
 {
     e.prepare(sr, 512, 2);
-    e.setSeed(seed, false);
 }
+
+// Coppie di canali usate dai test di trasparenza, corrotti e clipping: estremi, uguali e a caso.
+const std::vector<std::pair<int, int>> kPairs = {{1, 2}, {17, 17}, {64, 1}, {33, 60}};
 
 double maxDelta(const test::Signal& s, size_t from, size_t to)
 {
@@ -173,13 +177,13 @@ TEST_CASE("Acceptance: transparency at Drift = 0 with everything else at maximum
         const std::vector<test::Signal> inputs = {
             test::noise(len, 11u, 0.501187f), test::sine(len, 100.0, sr, 0.501187f),
             test::sine(len, 1000.0, sr, 0.501187f), test::sine(len, 10000.0, sr, 0.501187f)};
-        for (int voices : {2, 4, 8, 16})
+        for (const auto& [cl, cr] : kPairs)
         {
             for (const auto& x : inputs)
             {
                 DriftEngine e;
-                prepareEngine(e, sr, 31337);
-                e.setSettings(makeSettings(voices, 0.0f, 1.0f, 1.0f, 1.0f, 0.0f));
+                prepareEngine(e, sr);
+                e.setSettings(makeSettings(cl, cr, 0.0f, 1.0f, 1.0f, 1.0f, 0.0f));
                 test::Signal l = x, r = test::noise(len, 12u, 0.501187f);
                 const test::Signal rIn = r;
                 runStereo(e, l, r, 0, len, 480);
@@ -203,7 +207,6 @@ TEST_CASE("Acceptance: fuzzed parameters and block sizes never produce NaN or In
 
     DriftEngine e;
     e.prepare(48000.0, 4096, 2);
-    e.setSeed(1, false);
 
     std::vector<float> l(4096), r(4096);
     const float poison[] = {std::numeric_limits<float>::quiet_NaN(),
@@ -215,8 +218,9 @@ TEST_CASE("Acceptance: fuzzed parameters and block sizes never produce NaN or In
     for (int block = 0; block < 4000; ++block)
     {
         EngineSettings s;
-        const int voiceChoices[] = {2, 4, 8, 16};
-        s.numVoices = voiceChoices[pickInt(0, 3)];
+        // Canali diversi a ogni blocco (come un'automazione veloce), anche fuori range: il motore li limita.
+        s.channelL = pickInt(0, kNumConsoleChannels + 1);
+        s.channelR = pickInt(0, kNumConsoleChannels + 1);
         s.drift01 = uni(0.0f, 1.0f);
         s.freqTol01 = uni(0.0f, 1.0f);
         s.phaseTol01 = uni(0.0f, 1.0f);
@@ -226,11 +230,9 @@ TEST_CASE("Acceptance: fuzzed parameters and block sizes never produce NaN or In
         s.outGainDb = uni(-60.0f, 24.0f);
         s.bypass = pickInt(0, 9) == 0;
         e.setSettings(s);
-        if (pickInt(0, 19) == 0)
+        if (pickInt(0, 199) == 0)
         {
-            const auto lo = static_cast<std::uint64_t>(gen());
-            const auto hi = static_cast<std::uint64_t>(gen());
-            e.setSeed(lo | (hi << 32), pickInt(0, 1) == 0);
+            e.reset();
         }
 
         // Lunghezza: 0, 1, dispari, potenze di due, qualunque.
@@ -301,12 +303,12 @@ TEST_CASE("Acceptance: corrupted input is bounded and does not poison the state"
 
     for (const auto& pattern : patterns)
     {
-        for (int voices : {2, 16})
+        for (const auto& [cl, cr] : {std::pair{1, 2}, std::pair{40, 7}})
         {
-            const EngineSettings s = makeSettings(voices, 1.0f, 1.0f, 1.0f, 1.0f, 6.0f);
+            const EngineSettings s = makeSettings(cl, cr, 1.0f, 1.0f, 1.0f, 1.0f, 6.0f);
             DriftEngine corrupted, reference;
-            prepareEngine(corrupted, sr, 5);
-            prepareEngine(reference, sr, 5);
+            prepareEngine(corrupted, sr);
+            prepareEngine(reference, sr);
             corrupted.setSettings(s);
             reference.setSettings(s);
 
@@ -337,143 +339,169 @@ TEST_CASE("Acceptance: corrupted input is bounded and does not poison the state"
     }
 }
 
-TEST_CASE("Acceptance: voice count changes are click-free", "[acceptance]")
+namespace
 {
-    const double sr = 48000.0;
-    const size_t total = 60000;
-    const size_t window = 240; // 5 ms
-    const size_t rampLen = static_cast<size_t>(sr * DriftEngine::kVoiceRampSeconds);
-    const test::Signal in = test::sine(total, 1000.0, sr, 0.501187f);
+constexpr double kClickSr = 48000.0;
+constexpr size_t kClickTotal = 96000;
+constexpr size_t kClickWindow = 240; // 5 ms
+constexpr size_t kFadeLen = 12000;   // 250 ms
 
-    // Sequenza 2 -> 16 -> 4 -> 8 -> 2, con cambi a rampa in corso.
-    struct Change
-    {
-        size_t at;
-        int before, after;
-    };
-    const Change changes[] = {{12000, 2, 16}, {24000, 16, 4}, {24500, 4, 8},
-                              {36000, 8, 2},  {36300, 2, 16}, {36600, 16, 2}};
-    // Cambi con rampa completa (il successivo arriva dopo la fine): qui si controlla il livello finale.
-    const size_t completeAt[] = {12000, 24500, 36600};
+// Delta massimo e livello RMS (dB) di regime di ogni canale (1..64) con Drift al 100 %, sinusoide da 1 kHz a
+// -6 dBFS, Saturation 0 e Noise 0.
+struct SteadyTable
+{
+    std::array<double, kNumConsoleChannels + 1> delta{}, db{};
+};
 
-    // Più seed: ogni N ha un livello medio diverso a 1 kHz (le tolleranze delle singole voci).
-    double worstRatio = 0.0, worstStepRatio = 0.0, worstEndDb = 0.0;
-    for (std::uint64_t seed = 1; seed <= 30; ++seed)
+const SteadyTable& steadyTable()
+{
+    static const SteadyTable table = []
     {
-        INFO("seed " << seed);
-        // Regime di ogni N: delta massimo e livello RMS (dB) per lato.
-        double steadyDelta = 0.0;
-        double steadyDb[17][2] = {};
-        for (int voices : {2, 4, 8, 16})
+        SteadyTable t;
+        const test::Signal in = test::sine(kClickTotal / 2, 1000.0, kClickSr, 0.501187f);
+        for (int c = 1; c <= kNumConsoleChannels; ++c)
         {
             DriftEngine e;
-            prepareEngine(e, sr, seed);
-            e.setSettings(makeSettings(voices, 1.0f));
+            prepareEngine(e, kClickSr);
+            e.setSettings(makeSettings(c, c, 1.0f));
             test::Signal l = in, r = in;
-            runStereo(e, l, r, 0, total, 256);
-            steadyDelta = std::max({steadyDelta, maxDelta(l, 9600, total), maxDelta(r, 9600, total)});
-            steadyDb[voices][0] = test::toDb(test::rms(l, total - 4800, total));
-            steadyDb[voices][1] = test::toDb(test::rms(r, total - 4800, total));
+            runStereo(e, l, r, 0, in.size(), 256);
+            t.delta[static_cast<size_t>(c)] = maxDelta(l, 9600, in.size());
+            t.db[static_cast<size_t>(c)] = test::toDb(test::rms(l, in.size() - 4800, in.size()));
         }
-
-        DriftEngine e;
-        prepareEngine(e, sr, seed);
-        e.setSettings(makeSettings(2, 1.0f));
-        test::Signal out[2] = {in, in};
-        size_t pos = 0;
-        for (const auto& c : changes)
-        {
-            runStereo(e, out[0], out[1], pos, c.at, 64);
-            pos = c.at;
-            e.setSettings(makeSettings(c.after, 1.0f));
-        }
-        runStereo(e, out[0], out[1], pos, total, 64);
-
-        const double during = std::max(maxDelta(out[0], 12000, total), maxDelta(out[1], 12000, total));
-        worstRatio = std::max(worstRatio, (during - 1.0e-4) / steadyDelta);
-        CHECK(during <= 1.05 * steadyDelta + 1.0e-4);
-
-        for (int side = 0; side < 2; ++side)
-        {
-            const auto& y = out[side];
-            // Coppie di finestre consecutive da 5 ms: variazione massima ammessa durante una rampa.
-            for (size_t w = 9600; w + 2 * window <= total; w += window)
-            {
-                double allowed = 0.1;
-                for (const auto& c : changes)
-                {
-                    if (w < c.at + rampLen + window && w + 2 * window > c.at)
-                    {
-                        const double dL = std::fabs(steadyDb[c.after][side] - steadyDb[c.before][side]);
-                        allowed = std::max(allowed, 1.5 * dL * (static_cast<double>(window) / rampLen));
-                    }
-                }
-                const double step = std::fabs(test::toDb(test::rms(y, w + window, w + 2 * window)) -
-                                              test::toDb(test::rms(y, w, w + window)));
-                worstStepRatio = std::max(worstStepRatio, step / allowed);
-                if (step > allowed)
-                {
-                    FAIL_CHECK("RMS step " << step << " dB > " << allowed << " dB at sample " << w);
-                }
-            }
-            // A fine rampa il livello coincide con quello di regime della nuova configurazione.
-            for (const auto& c : changes)
-            {
-                if (std::find(std::begin(completeAt), std::end(completeAt), c.at) == std::end(completeAt))
-                {
-                    continue;
-                }
-                const size_t from = c.at + rampLen + window;
-                const double dev =
-                    std::fabs(test::toDb(test::rms(y, from, from + window)) - steadyDb[c.after][side]);
-                worstEndDb = std::max(worstEndDb, dev);
-                CHECK(dev <= 0.05);
-            }
-        }
-    }
-    std::printf("[acceptance] voice changes, 30 seeds: worst delta ratio %.4f (limit 1.05), worst RMS step / "
-                "allowed %.3f (limit 1), worst end-of-ramp level error %.4f dB (limit 0.05)\n",
-                worstRatio, worstStepRatio, worstEndDb);
+        return t;
+    }();
+    return table;
 }
 
-TEST_CASE("Acceptance: Randomize is click-free", "[acceptance]")
+// Un cambio di canali all'istante `at`.
+struct ChannelEvent
 {
-    const double sr = 48000.0;
-    const size_t total = 72000;
-    const test::Signal in = test::sine(total, 1000.0, sr, 0.501187f);
+    size_t at;
+    int l, r;
+};
 
-    // Delta massimo a regime: il peggiore tra i profili usati.
-    double steady = 0.0;
-    for (std::uint64_t seed : {1u, 2u, 3u})
+struct ClickResult
+{
+    double delta = 0.0, steadyDelta = 0.0, stepRatio = 0.0;
+};
+
+// Controlla uscita `out` (L e R) di una sequenza di cambi di canale partita da (startL, startR):
+// - il delta campione-campione non supera 1.05 x quello di regime + 1e-4;
+// - il salto RMS tra finestre da 5 ms non supera max(0.1 dB, 1.5 x |dL| x 5 / 250), dove dL è il massimo
+// scarto di
+//   livello di regime tra i canali toccati dal lato nell'intorno della finestra.
+ClickResult checkClickFree(const std::array<test::Signal, 2>& out, int startL, int startR,
+                           const std::vector<ChannelEvent>& events)
+{
+    const auto& table = steadyTable();
+    ClickResult result;
+
+    // Segmenti (inizio, canale) per lato.
+    std::array<std::vector<std::pair<size_t, int>>, 2> segments;
+    segments[0].push_back({0, startL});
+    segments[1].push_back({0, startR});
+    for (const auto& ev : events)
     {
-        DriftEngine e;
-        prepareEngine(e, sr, seed);
-        e.setSettings(makeSettings(4, 1.0f));
-        test::Signal l = in, r = in;
-        runStereo(e, l, r, 0, total, 256);
-        steady = std::max({steady, maxDelta(l, 9600, total), maxDelta(r, 9600, total)});
+        segments[0].push_back({ev.at, ev.l});
+        segments[1].push_back({ev.at, ev.r});
     }
 
-    DriftEngine e;
-    prepareEngine(e, sr, 1);
-    e.setSettings(makeSettings(4, 1.0f));
-    test::Signal l = in, r = in;
-    runStereo(e, l, r, 0, 12000, 64);
-    e.setSeed(2, true);
-    runStereo(e, l, r, 12000, 24000, 64);
-    e.setSeed(3, true); // seconda randomizzazione a crossfade concluso
-    runStereo(e, l, r, 24000, 30000, 64);
-    e.setSeed(1, true); // e una a fade in corso (dopo 100 ms)
-    runStereo(e, l, r, 30000, 34800, 64);
-    e.setSeed(2, true);
-    runStereo(e, l, r, 34800, total, 64);
+    for (size_t side = 0; side < 2; ++side)
+    {
+        const auto& seg = segments[side];
+        const auto& y = out[side];
 
-    const double during = std::max(maxDelta(l, 12000, total), maxDelta(r, 12000, total));
-    const double stepDb = std::max(maxRmsStepDb(l, 9600, total, 240), maxRmsStepDb(r, 9600, total, 240));
-    std::printf("[acceptance] randomize: max delta %.5f (steady %.5f, limit %.5f), max RMS step %.4f dB\n",
-                during, steady, 1.05 * steady + 1.0e-4, stepDb);
-    CHECK(during <= 1.05 * steady + 1.0e-4);
-    CHECK(stepDb <= 0.1);
+        double steadyDelta = 0.0;
+        for (const auto& [at, c] : seg)
+        {
+            steadyDelta = std::max(steadyDelta, table.delta[static_cast<size_t>(c)]);
+        }
+        const double during = maxDelta(y, 9600, y.size());
+        result.delta = std::max(result.delta, during);
+        result.steadyDelta = std::max(result.steadyDelta, steadyDelta);
+        CHECK(during <= 1.05 * steadyDelta + 1.0e-4);
+
+        for (size_t w = 9600; w + 2 * kClickWindow <= y.size(); w += kClickWindow)
+        {
+            // Canali attivi tra (w - fade) e la fine della coppia di finestre.
+            double lo = 1.0e9, hi = -1.0e9;
+            for (size_t i = 0; i < seg.size(); ++i)
+            {
+                const size_t start = seg[i].first;
+                const size_t end = i + 1 < seg.size() ? seg[i + 1].first : y.size();
+                if (start < w + 2 * kClickWindow && end + kFadeLen > w)
+                {
+                    const double db = table.db[static_cast<size_t>(seg[i].second)];
+                    lo = std::min(lo, db);
+                    hi = std::max(hi, db);
+                }
+            }
+            const double allowed =
+                std::max(0.1, 1.5 * (hi - lo) * (static_cast<double>(kClickWindow) / kFadeLen));
+            const double step = std::fabs(test::toDb(test::rms(y, w + kClickWindow, w + 2 * kClickWindow)) -
+                                          test::toDb(test::rms(y, w, w + kClickWindow)));
+            result.stepRatio = std::max(result.stepRatio, step / allowed);
+            if (step > allowed)
+            {
+                FAIL_CHECK("RMS step " << step << " dB > " << allowed << " dB at sample " << w << " side "
+                                       << side);
+            }
+        }
+    }
+    return result;
+}
+
+std::array<test::Signal, 2> runChannelEvents(int startL, int startR, const std::vector<ChannelEvent>& events,
+                                             int block)
+{
+    const test::Signal in = test::sine(kClickTotal, 1000.0, kClickSr, 0.501187f);
+    DriftEngine e;
+    prepareEngine(e, kClickSr);
+    e.setSettings(makeSettings(startL, startR, 1.0f));
+    std::array<test::Signal, 2> out{in, in};
+    size_t pos = 0;
+    for (const auto& ev : events)
+    {
+        runStereo(e, out[0], out[1], pos, ev.at, block);
+        pos = ev.at;
+        e.setSettings(makeSettings(ev.l, ev.r, 1.0f));
+    }
+    runStereo(e, out[0], out[1], pos, kClickTotal, block);
+    return out;
+}
+} // namespace
+
+TEST_CASE("Acceptance: channel changes are click-free", "[acceptance]")
+{
+    // Cambi isolati e cambi a fade in corso, su entrambi i lati.
+    const std::vector<ChannelEvent> slow = {{12000, 40, 9},  {24000, 40, 50}, {24500, 17, 50}, {36000, 3, 22},
+                                            {36300, 60, 22}, {60000, 61, 1},  {60100, 8, 2}};
+    const auto a = checkClickFree(runChannelEvents(5, 9, slow, 64), 5, 9, slow);
+
+    // Automazione veloce: entrambi i canali cambiano a OGNI blocco (64 campioni e 32 campioni).
+    std::mt19937 gen(4242);
+    std::uniform_int_distribution<int> pick(1, kNumConsoleChannels);
+    ClickResult worstFast;
+    for (int block : {64, 32, 480})
+    {
+        std::vector<ChannelEvent> fast;
+        for (size_t at = 12000; at < kClickTotal; at += static_cast<size_t>(block))
+        {
+            fast.push_back({at, pick(gen), pick(gen)});
+        }
+        const auto r = checkClickFree(runChannelEvents(1, 2, fast, block), 1, 2, fast);
+        worstFast.delta = std::max(worstFast.delta, r.delta);
+        worstFast.steadyDelta = std::max(worstFast.steadyDelta, r.steadyDelta);
+        worstFast.stepRatio = std::max(worstFast.stepRatio, r.stepRatio);
+    }
+    std::printf("[acceptance] channel changes, slow: max delta %.5f (steady %.5f, limit %.5f), RMS step / "
+                "allowed %.3f\n",
+                a.delta, a.steadyDelta, 1.05 * a.steadyDelta + 1.0e-4, a.stepRatio);
+    std::printf("[acceptance] channel changes, every block: max delta %.5f (steady %.5f, limit %.5f), RMS "
+                "step / allowed %.3f\n",
+                worstFast.delta, worstFast.steadyDelta, 1.05 * worstFast.steadyDelta + 1.0e-4,
+                worstFast.stepRatio);
 }
 
 TEST_CASE("Acceptance: no clipping with everything at maximum and Output +24 dB", "[acceptance]")
@@ -483,13 +511,13 @@ TEST_CASE("Acceptance: no clipping with everything at maximum and Output +24 dB"
     const float amp = 0.891251f; // -1 dBFS
     const std::vector<test::Signal> inputs = {test::sine(len, 1000.0, sr, amp),
                                               test::sine(len, 60.0, sr, amp), test::noise(len, 77u, amp)};
-    for (int voices : {2, 16})
+    for (const auto& [cl, cr] : {std::pair{1, 2}, std::pair{64, 33}})
     {
         for (const auto& x : inputs)
         {
             DriftEngine e;
-            prepareEngine(e, sr, 8);
-            e.setSettings(makeSettings(voices, 1.0f, 1.0f, 1.0f, 1.0f, 24.0f));
+            prepareEngine(e, sr);
+            e.setSettings(makeSettings(cl, cr, 1.0f, 1.0f, 1.0f, 1.0f, 24.0f));
             test::Signal l = x, r = x;
             runStereo(e, l, r, 0, len, 512);
             CHECK(std::max(maxAbs(l), maxAbs(r)) <= 1.0);
@@ -499,36 +527,56 @@ TEST_CASE("Acceptance: no clipping with everything at maximum and Output +24 dB"
     }
 }
 
-TEST_CASE("Acceptance: -6 dBFS with Output 0 dB and Drift at maximum does not engage the ceiling",
+TEST_CASE("Acceptance: -6 dBFS tones with Output 0 dB and Drift at maximum do not engage the ceiling",
           "[acceptance]")
 {
     const double sr = 48000.0;
     const size_t len = 48000;
     const float amp = 0.501187f; // -6 dBFS
-    const std::vector<test::Signal> inputs = {test::sine(len, 1000.0, sr, amp),
-                                              test::sine(len, 100.0, sr, amp), test::noise(len, 78u, amp)};
-    double peak = 0.0;
-    // Saturazione a 0 (caso con meno compressione, quindi meno margine) e al massimo.
-    for (const auto& [voices, sat] :
-         std::vector<std::pair<int, float>>{{2, 0.0f}, {4, 0.0f}, {16, 0.0f}, {2, 1.0f}, {16, 1.0f}})
+    const std::vector<test::Signal> tones = {test::sine(len, 1000.0, sr, amp),
+                                             test::sine(len, 100.0, sr, amp)};
+    const test::Signal noiseIn = test::noise(len, 78u, amp);
+    double tonePeak = 0.0, noisePeak = 0.0;
+    // Saturazione a 0 (caso con meno compressione, quindi meno margine) e al massimo. Un canale ogni tre,
+    // più gli estremi con Saturation al massimo.
+    std::vector<std::pair<int, float>> configs;
+    for (int c = 1; c <= kNumConsoleChannels; c += 3)
     {
-        for (const auto& x : inputs)
+        configs.push_back({c, 0.0f});
+    }
+    configs.push_back({1, 1.0f});
+    configs.push_back({64, 1.0f});
+    for (const auto& [chan, sat] : configs)
+    {
+        for (const auto& x : tones)
         {
             DriftEngine e;
-            prepareEngine(e, sr, 9);
-            e.setSettings(makeSettings(voices, 1.0f, 1.0f, sat, 1.0f, 0.0f));
+            prepareEngine(e, sr);
+            e.setSettings(makeSettings(chan, chan % kNumConsoleChannels + 1, 1.0f, 1.0f, sat, 1.0f, 0.0f));
             test::Signal l = x, r = x;
             for (size_t pos = 0; pos < len; pos += 512)
             {
                 runStereo(e, l, r, pos, std::min(pos + 512, len), 512);
-                INFO("voices " << voices << " input " << (&x - &inputs[0]) << " pos " << pos);
+                INFO("channel " << chan << " pos " << pos);
                 REQUIRE_FALSE(e.meters().ceilingActive.load());
             }
-            peak = std::max({peak, maxAbs(l), maxAbs(r)});
+            tonePeak = std::max({tonePeak, maxAbs(l), maxAbs(r)});
         }
+
+        // Rumore bianco a pieno spettro: l'allpass del primo ordine ruota la fase delle alte frequenze (fino
+        // a un'inversione di polarità a Nyquist) e un singolo canale per lato può alzare il picco di un
+        // campione vicino al doppio. Qui il ceiling può lavorare, ma l'uscita non supera mai 0 dBFS.
+        DriftEngine e;
+        prepareEngine(e, sr);
+        e.setSettings(makeSettings(chan, chan % kNumConsoleChannels + 1, 1.0f, 1.0f, sat, 1.0f, 0.0f));
+        test::Signal l = noiseIn, r = noiseIn;
+        runStereo(e, l, r, 0, len, 512);
+        noisePeak = std::max({noisePeak, maxAbs(l), maxAbs(r)});
     }
-    std::printf("[acceptance] -6 dBFS input, Drift max: peak %.4f\n", peak);
-    CHECK(peak < 0.891);
+    std::printf("[acceptance] -6 dBFS tones, Drift max: peak %.4f; -6 dBFS white noise: peak %.4f\n",
+                tonePeak, noisePeak);
+    CHECK(tonePeak < 0.891);
+    CHECK(noisePeak <= 1.0);
 }
 
 namespace
@@ -536,7 +584,7 @@ namespace
 constexpr double kStateSr = 48000.0;
 constexpr int kStateBlock = 480;
 
-// Parametri del test di stato: Drift 100 %, Noise 100 %, Saturation 50 %, 8 voci.
+// Parametri del test di stato: Drift 100 %, Noise 100 %, Saturation 50 %, canali L 21 e R 55.
 void configureForStateTest(DriftboxAudioProcessor& p)
 {
     auto set = [&p](const char* id, float value)
@@ -544,7 +592,8 @@ void configureForStateTest(DriftboxAudioProcessor& p)
         auto* param = p.getAPVTS().getParameter(id);
         param->setValueNotifyingHost(param->convertTo0to1(value));
     };
-    set(pid::channels, 2.0f); // indice 2: 8 voci
+    set(pid::chanL, 21.0f);
+    set(pid::chanR, 55.0f);
     set(pid::drift, 1.0f);
     set(pid::noise, 1.0f);
     set(pid::saturation, 0.5f);
@@ -609,11 +658,13 @@ TEST_CASE("Acceptance: a restored state sounds identical from the first sample",
     juce::MemoryBlock state;
     a.getStateInformation(state);
 
-    // B: nuova istanza, prepareToPlay PRIMA e stato DOPO (il seed arriva a playback pronto).
+    // B: nuova istanza, prepareToPlay PRIMA e stato DOPO (i canali arrivano a playback pronto, ma prima del
+    // primo blocco: nessun fade).
     DriftboxAudioProcessor b;
     prepareForStateTest(b);
     b.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
-    REQUIRE(b.getSeed() == a.getSeed());
+    CHECK(b.getAPVTS().getRawParameterValue(pid::chanL)->load() == Approx(21.0f));
+    CHECK(b.getAPVTS().getRawParameterValue(pid::chanR)->load() == Approx(55.0f));
     CHECK(b.getAPVTS().getRawParameterValue(pid::drift)->load() == Approx(1.0f));
     const auto outB = runProcessor(b, inL, inR, 0, len);
 
@@ -626,8 +677,8 @@ TEST_CASE("Acceptance: a restored state sounds identical from the first sample",
     CHECK(bitIdentical(outB.l, outA2.l));
     CHECK(bitIdentical(outB.r, outA2.r));
 
-    // Il segnale è davvero elaborato e finito, e il seed conta: un'altra istanza con lo stesso stato ma
-    // un seed diverso suona diversa.
+    // Il segnale è davvero elaborato e finito, e i canali contano: un'altra istanza con lo stesso stato ma un
+    // canale diverso suona diversa.
     CHECK(maxDiff(outB.l, inL) > 1.0e-3);
     for (size_t i = 0; i < len; ++i)
     {
@@ -636,53 +687,63 @@ TEST_CASE("Acceptance: a restored state sounds identical from the first sample",
     }
     DriftboxAudioProcessor other;
     other.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
-    other.setSeed(a.getSeed() ^ 0x5555555555555555ULL);
+    auto* chanL = other.getAPVTS().getParameter(pid::chanL);
+    chanL->setValueNotifyingHost(chanL->convertTo0to1(22.0f));
     prepareForStateTest(other);
     const auto outOther = runProcessor(other, inL, inR, 0, len);
     CHECK(maxDiff(outOther.l, outB.l) > 1.0e-3);
 }
 
-TEST_CASE("Acceptance: a state restored during playback applies the seed without a crossfade",
-          "[acceptance][state]")
+TEST_CASE("Acceptance: Randomize is click-free", "[acceptance]")
 {
-    const size_t warm = 24 * kStateBlock, len = warm + kStateBlock;
-    const test::Signal inL = test::noise(len, 601u, 0.5f), inR = test::noise(len, 602u, 0.5f);
+    const test::Signal in = test::sine(kClickTotal, 1000.0, kStateSr, 0.501187f);
 
-    DriftboxAudioProcessor src;
-    configureForStateTest(src);
-    juce::MemoryBlock state;
-    src.getStateInformation(state);
-
-    // Istanza in riproduzione con gli stessi parametri ma un altro seed; poi arriva lo stato.
-    auto makePlaying = [&](DriftboxAudioProcessor& p)
+    DriftboxAudioProcessor p;
+    configureForStateTest(p);
+    auto set = [&p](const char* id, float value)
     {
-        configureForStateTest(p);
-        p.setSeed(src.getSeed() ^ 0xa5a5a5a5a5a5a5a5ULL);
-        prepareForStateTest(p);
-        runProcessor(p, inL, inR, 0, warm);
+        auto* param = p.getAPVTS().getParameter(id);
+        param->setValueNotifyingHost(param->convertTo0to1(value));
+    };
+    set(pid::noise, 0.0f);
+    set(pid::saturation, 0.0f);
+    set(pid::chanL, 5.0f);
+    set(pid::chanR, 9.0f);
+    prepareForStateTest(p);
+
+    const auto channels = [&p]
+    {
+        return std::pair{static_cast<int>(p.getAPVTS().getRawParameterValue(pid::chanL)->load()),
+                         static_cast<int>(p.getAPVTS().getRawParameterValue(pid::chanR)->load())};
     };
 
-    DriftboxAudioProcessor playing;
-    makePlaying(playing);
-    playing.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
-    REQUIRE(playing.getSeed() == src.getSeed());
-    const auto got = runProcessor(playing, inL, inR, warm, len);
+    // Randomize a crossfade concluso, a fade in corso (dopo 100 ms) e due volte di fila.
+    std::vector<ChannelEvent> events;
+    StereoOut out;
+    size_t pos = 0;
+    auto runTo = [&](size_t to)
+    {
+        const auto part = runProcessor(p, in, in, pos, to);
+        out.l.insert(out.l.end(), part.l.begin(), part.l.end());
+        out.r.insert(out.r.end(), part.r.begin(), part.r.end());
+        pos = to;
+    };
+    const size_t step = 480;
+    runTo(12000);
+    for (const size_t at : std::vector<size_t>{12000, 30000, 34800, 34800 + step, 60000})
+    {
+        if (at > pos)
+        {
+            runTo(at);
+        }
+        p.randomize();
+        const auto [l, r] = channels();
+        events.push_back({pos, l, r});
+    }
+    runTo(kClickTotal);
+    REQUIRE(out.l.size() == kClickTotal);
 
-    // Riferimento: istanza preparata da zero con quello stato, con lo stesso ingresso del blocco successivo.
-    DriftboxAudioProcessor freshSame;
-    freshSame.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
-    prepareForStateTest(freshSame);
-    test::Signal subL(inL.begin() + static_cast<std::ptrdiff_t>(warm), inL.end());
-    test::Signal subR(inR.begin() + static_cast<std::ptrdiff_t>(warm), inR.end());
-    const auto want = runProcessor(freshSame, subL, subR, 0, kStateBlock);
-    const double snapDiff = std::max(maxDiff(got.l, want.l), maxDiff(got.r, want.r));
-    std::printf("[acceptance] snap restore: max |playing - fresh| = %.3g\n", snapDiff);
-    CHECK(snapDiff < 1.0e-5);
-
-    // Controllo negativo: con un crossfade (seed impostato a mano) l'uscita sarebbe ben diversa.
-    DriftboxAudioProcessor faded;
-    makePlaying(faded);
-    faded.setSeed(src.getSeed());
-    const auto fadedOut = runProcessor(faded, inL, inR, warm, len);
-    CHECK(std::max(maxDiff(fadedOut.l, want.l), maxDiff(fadedOut.r, want.r)) > 10.0 * snapDiff + 1.0e-4);
+    const auto result = checkClickFree({out.l, out.r}, 5, 9, events);
+    std::printf("[acceptance] randomize: max delta %.5f (steady %.5f, limit %.5f), RMS step / allowed %.3f\n",
+                result.delta, result.steadyDelta, 1.05 * result.steadyDelta + 1.0e-4, result.stepRatio);
 }
