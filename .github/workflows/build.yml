@@ -1,6 +1,6 @@
 name: build
 
-# Reusable build/test/validate/package workflow, called from ci.yml (and later release.yml, T9).
+# Reusable build/test/validate/package workflow, called from ci.yml and release.yml.
 on:
   workflow_call:
     inputs:
@@ -13,7 +13,7 @@ on:
         type: string
         default: ''
       installers:
-        description: 'Also build the Windows setup .exe and the macOS .pkg (release only). Not wired yet.'
+        description: 'Also build the Windows setup .exe and the macOS .pkg (release only, to keep PR CI cheap)'
         type: boolean
         default: false
 
@@ -170,8 +170,25 @@ jobs:
         shell: bash
         run: scripts/ci/package.sh "${{ matrix.package }}" "build/${{ matrix.preset }}" dist "${{ inputs.version }}"
 
-      # TODO(T9): installer steps (Inno Setup .exe on Windows, pkgbuild .pkg on macOS) go here, gated on
-      # `inputs.installers`. They build from the zip produced by the Package step above.
+      - name: Build Windows installer (Inno Setup)
+        if: inputs.installers && matrix.name == 'windows'
+        shell: pwsh
+        run: |
+          choco install innosetup --version=6.7.3 --no-progress -y
+          $zip = (Get-ChildItem dist -Filter 'Driftbox-v*-windows.zip').FullName
+          $ver = '${{ inputs.version }}'
+          if (-not $ver) { $ver = (Get-Item $zip).BaseName -replace '^Driftbox-v(.*)-windows$', '$1' }
+          scripts/ci/make_installer_windows.ps1 -Zip $zip -Version $ver -OutDir dist
+
+      - name: Build macOS installer (pkgbuild/productbuild)
+        if: inputs.installers && matrix.name == 'macos'
+        shell: bash
+        run: |
+          zip="$(ls dist/Driftbox-v*-macos.zip)"
+          ver="${{ inputs.version }}"
+          if [[ -z "$ver" ]]; then ver="$(basename "$zip" .zip | sed -E 's/^Driftbox-v(.*)-macos$/\1/')"; fi
+          scripts/ci/make_installer_macos.sh "$zip" "$ver" dist
+        # Signing is off by default; to enable, add env MACOS_INSTALLER_CERT (see docs/MACOS_SIGNING.md).
 
       - name: Upload package
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
