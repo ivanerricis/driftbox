@@ -60,6 +60,7 @@ The state is the APVTS value tree as XML, with tag `DRIFTBOX_STATE`. It carries 
 - `profileVersion`: `kProfileVersion`, currently 1 (the only channel profile generator version that exists so far)
 - `uiWidth` and `uiHeight`
 - `advancedOpen`: whether the Advanced panel is open (absent means closed; not a parameter, no undo step)
+- `presetName`: the name of the preset last loaded or saved (absent means no preset is loaded; the bar then shows "Default"; not a parameter, no undo step)
 
 The channels are ordinary parameters, so they are saved with the parameter tree. Loading and saving follow these rules:
 
@@ -68,7 +69,7 @@ The channels are ordinary parameters, so they are saved with the parameter tree.
 - **New instances**: the constructor picks a random channel pair (as `randomize()` does, but without an undo step), so two new instances do not sound identical by chance. The parameter defaults (used by reset and Ctrl-click) stay 1 and 2. A restored state overwrites everything.
 - **Randomize and undo**: `randomize()` (message thread) picks L in 1..64 and R = L % 64 + 1, different from the current pair, and applies both as ONE undo step named "Randomize" (a transaction with nested gestures on both parameters). Parameter gestures from the UI are recorded as one step each by `UndoRecorder`; host automation is not. Restoring a state clears the history. The constructor leaves no step in the history.
 - **Legacy**: a `driftSeed` property from development builds is dropped on load.
-- **Presets**: they never contain or overwrite `bypass`, because it is a project-level value.
+- **Presets**: they store and restore only the seven parameters listed in [Presets and settings](#presets-and-settings). They never contain or overwrite `chanL`, `chanR`, `bypass`, `advancedOpen`, `uiWidth` or `uiHeight`.
 
 ## Frozen C++ contracts (excerpts)
 
@@ -116,15 +117,85 @@ DSP module conventions (same as Pentagrit):
   editor size (fixed aspect ratio, zoom 75 % to 200 %; `setZoom()` resizes the window, the size is saved with
   `setUiSize()`). Host DPI scaling is left to the host.
 - `src/ui/`: `Theme.h` (palette and sizes, see `docs/design/THEME.md`), `Fonts` (embedded IBM Plex), `LookAndFeel`,
-  `Widgets` (knobs, channel selector, buttons, stereo meter), `TopBar`, `PresetBar` (T8 hooks), `Panels`
-  (channel, tolerance graph, drift, advanced, output) and `Footer`.
+  `Widgets` (knobs, channel selector, buttons, stereo meter), `TopBar`, `PresetBar`, `Panels`
+  (channel, tolerance graph, drift, advanced, output), `Footer`, and the overlays `OverlayMenu`, `ModalOverlay`,
+  `SettingsPanel` and `PresetDialog` (see below).
 - A 30 Hz timer reads the parameters; the tolerance graph recomputes and repaints only when its inputs change.
   The curve comes from `toleranceDeviationDb()` (`src/dsp/ToleranceResponse.h`), which uses
   `DriftChannel::design()`, the same design values the engine applies.
 - The UI only reads atomics (`MeterState`, parameters) and never runs in the audio path. `MeterState` has per-side
   output peaks (`outPeakDbL`, `outPeakDbR`) for the stereo meter.
-- Hooks for T8: `PresetBar::onPrev/onNext/onOpenList/onOpenActions` and `setPresetName()`,
-  `DriftboxAudioProcessorEditor::onSettings`, `showCpu`, `setZoom()`, `setTooltipsEnabled()`, `content()`.
+- Hooks: `PresetBar::onPrev/onNext/onOpenList/onOpenActions`, `setPresetName()` and `setModified()`,
+  `DriftboxAudioProcessorEditor::onSettings` (notification; the settings modal opens anyway), `showCpu`,
+  `setZoom()`, `setTooltipsEnabled()`, `content()`.
+
+## Presets and settings
+
+### Presets
+
+- Everything lives in `PresetManager` (`src/presets/`), owned by the processor, message thread only. A preset stores
+  and restores **only** these seven parameters, in this order: `drift`, `freqTol`, `phaseTol`, `gainTol`,
+  `saturation`, `noise`, `outGain` (`PresetValues`). `chanL`, `chanR`, `bypass` and the non-parameter state
+  properties are never stored or changed.
+- Loading never replaces the state tree. `DriftboxAudioProcessor::applyPresetValues()` opens one undo transaction
+  named after the preset and sets the seven parameters one by one inside nested gestures, exactly like
+  `randomize()` (the `UndoRecorder` does not rename the transaction while `groupedEdit_` is set). Undo restores the
+  values; the preset name in the bar is not undone, so the bar then shows the modified dot.
+- **Factory presets** are embedded from `resources/presets/*.xml` (`juce_add_binary_data` target
+  `DriftboxPresetData`), menu order = file name order. They are read-only.
+- **User presets** are `.dbp` files in the user folder (default `%APPDATA%/Driftbox/Presets` on Windows,
+  `~/Library/Application Support/Driftbox/Presets` on macOS, `~/.config/Driftbox/Presets` on Linux; overridable by
+  the "User preset folder" setting). The file name is the preset name. Format:
+  `<DRIFTBOX_PRESET version="1" name="..."><PARAM id="drift" value="0.62"/> ... </DRIFTBOX_PRESET>`, values
+  denormalised (unit parameters 0..1, `outGain` in dB). Missing parameters take their default, out-of-range values are
+  clamped, ids other than the seven are ignored. A file that is not valid XML, has another root tag, a non-numeric
+  value or a `version` newer than the plugin's is skipped without error (`getSkippedFiles()`), as is a file named
+  like a factory preset. Files are written through a temporary file. User preset names cannot equal a factory name
+  (case-insensitive), so the name in the state is unambiguous.
+- Navigation (prev/next, wrapping) walks the factory list then the user list (sorted by name). "Modified" is
+  computed on demand by comparing the current values with the loaded preset looked up by name (tolerance 0.05 % for
+  unit parameters and 0.05 dB for `outGain`); there are no listeners, so host automation threads are not involved.
+  The library is scanned when an editor opens, when a menu or dialog opens and on prev/next, never in the
+  processor constructor.
+- A state without `presetName` (a new instance, or a project saved before presets existed) shows "Default" in the bar,
+  is never "modified" and has no loaded preset: next goes to the first preset (Init), previous to the last one. Deleting the
+  current user preset loads Init.
+
+Factory preset values (denormalised; `outGain` is 0 dB in all of them):
+
+| Preset | Drift | Freq tol | Phase tol | Gain tol | Saturation | Noise |
+|---|---|---|---|---|---|---|
+| Init | 0 % | 50 % | 50 % | 50 % | 20 % | 0 % |
+| Subtle Spread | 62 % | 50 % | 50 % | 50 % | 20 % | 0 % |
+| Wide Pair | 85 % | 70 % | 90 % | 60 % | 10 % | 0 % |
+| Warm Console | 70 % | 60 % | 40 % | 50 % | 55 % | 15 % |
+| Gentle Grit | 55 % | 30 % | 30 % | 40 % | 85 % | 10 % |
+| Noisy Desk | 80 % | 50 % | 50 % | 50 % | 30 % | 70 % |
+
+Init is the plugin defaults with Drift at 0 % (transparent). The others are the values of the approved mockup.
+
+### Settings
+
+- `SettingsManager` (`src/settings/`) keeps the per-user settings in a `juce::PropertiesFile`
+  (`<app data>/Driftbox/settings.settings`, `~/Library/Application Support/Driftbox/` on macOS). One instance is
+  shared by all plugin instances of the process (`juce::SharedResourcePointer`), the file is protected by an
+  inter-process lock, and a missing or unreadable file gives the defaults (the file is created on the first change, not by
+  reading). Message thread only; it broadcasts a synchronous change message.
+- Settings: `uiZoom` (75/100/125/150/200 %, default 100), `tooltips` (default on), `showCpu` (default on),
+  `presetFolder` (empty = platform default). They never enter the project state or a preset.
+- Zoom: a change resizes every open editor (`setZoom()`); a new editor uses it only when the processor state has no
+  saved size (`hasStoredUiSize()`), otherwise the saved size of the project wins. Other changes (tooltips, CPU) do
+  not resize.
+- The tests redirect the settings file and the default preset folder to a temporary folder
+  (`SettingsManager::setTestOverrides`, called from `tests/TestMain.cpp`).
+
+### Overlays
+
+The settings modal, the preset list, the actions menu and the Save As / Delete dialog are components inside
+`content()` (they scale with the editor and can be snapshotted), not native windows: no modal loops, and a click or
+key never reaches the controls below. They are hidden at once and destroyed on the next message-loop turn. The
+folder chooser is the only native dialog (`FileChooser::launchAsync`). `SettingsPanel::updatesSection()` is a hidden
+placeholder where T8b adds the update-check row.
 
 ## Build notes
 

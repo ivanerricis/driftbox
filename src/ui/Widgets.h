@@ -23,7 +23,8 @@ enum class Icon
     gear,
     randomize,
     selectorLeft, // selettore di canale
-    selectorRight
+    selectorRight,
+    close // chiusura delle finestre sovrapposte (impostazioni)
 };
 
 // Disegna l'icona centrata in `area`, scalata in modo che il suo viewBox misuri `scale` x (1 = pixel del

@@ -34,6 +34,14 @@ juce_add_binary_data(DriftboxUiAssets
   SOURCES ${DRIFTBOX_FONT_FILES})
 set_target_properties(DriftboxUiAssets PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+# Preset di fabbrica incorporati (resources/presets/*.xml, in ordine di nome file).
+file(GLOB DRIFTBOX_PRESET_FILES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/resources/presets/*.xml")
+juce_add_binary_data(DriftboxPresetData
+  HEADER_NAME DriftboxPresetData.h
+  NAMESPACE DriftboxPresetData
+  SOURCES ${DRIFTBOX_PRESET_FILES})
+set_target_properties(DriftboxPresetData PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 add_library(DriftboxCore INTERFACE)
 target_sources(DriftboxCore INTERFACE ${DRIFTBOX_CORE_SOURCES})
 target_include_directories(DriftboxCore INTERFACE
@@ -43,7 +51,8 @@ target_link_libraries(DriftboxCore INTERFACE
   DriftboxCompilerSettings
   juce::juce_audio_utils
   juce::juce_dsp
-  DriftboxUiAssets)
+  DriftboxUiAssets
+  DriftboxPresetData)
 
 # ---- Plugin (nessuno Standalone: solo VST3, CLAP e AU su macOS) ----
 set(DRIFTBOX_FORMATS VST3)

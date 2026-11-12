@@ -19,8 +19,14 @@ void PresetBar::NameButton::paintButton(juce::Graphics& g, bool highlighted, boo
 
     g.setColour(col::ink);
     g.setFont(fonts::sans(12.5f, fonts::Weight::medium));
-    g.drawText(name_, area.withTrimmedLeft(10.0f).withTrimmedRight(30.0f), juce::Justification::centredLeft,
-               true);
+    // Con il pallino "modificato" il testo lascia 12 px in più a destra.
+    g.drawText(name_, area.withTrimmedLeft(10.0f).withTrimmedRight(modified_ ? 42.0f : 30.0f),
+               juce::Justification::centredLeft, true);
+    if (modified_)
+    {
+        g.setColour(col::accent);
+        g.fillEllipse(area.getRight() - 36.0f, area.getCentreY() - 2.5f, 5.0f, 5.0f);
+    }
     drawIcon(g, Icon::caretDown,
              juce::Rectangle<float>(area.getRight() - 20.0f, area.getY(), 10.0f, area.getHeight()),
              col::ink2);
@@ -40,7 +46,7 @@ PresetBar::PresetBar()
     {
         addAndMakeVisible(*c);
     }
-    nameButton_.setLabelText(name_);
+    nameButton_.setLabelText(name_, false);
     prev_.onClick = [this]
     {
         if (onPrev)
@@ -73,8 +79,22 @@ PresetBar::PresetBar()
 
 void PresetBar::setPresetName(const juce::String& name)
 {
+    if (name == name_)
+    {
+        return;
+    }
     name_ = name;
-    nameButton_.setLabelText(name);
+    nameButton_.setLabelText(name, modified_);
+}
+
+void PresetBar::setModified(bool modified)
+{
+    if (modified == modified_)
+    {
+        return;
+    }
+    modified_ = modified;
+    nameButton_.setLabelText(name_, modified);
 }
 
 void PresetBar::resized()

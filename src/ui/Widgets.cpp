@@ -57,7 +57,7 @@ const IconSpec& specFor(Icon icon)
 {
     static const auto specs = []
     {
-        std::array<IconSpec, 10> s;
+        std::array<IconSpec, 11> s;
         auto svg = [](const char* d) { return juce::Drawable::parseSVGPath(d); };
         s[static_cast<size_t>(Icon::chevronLeft)] = {svg("M7.5 2.5 4 6l3.5 3.5"), 12.0f, 12.0f, 1.6f, false};
         s[static_cast<size_t>(Icon::chevronRight)] = {svg("M4.5 2.5 8 6l-3.5 3.5"), 12.0f, 12.0f, 1.6f,
@@ -82,6 +82,8 @@ const IconSpec& specFor(Icon icon)
             14.0f, 14.0f, 1.4f, false};
         s[static_cast<size_t>(Icon::selectorLeft)] = {svg("M8 2 3.5 7 8 12"), 12.0f, 14.0f, 2.0f, false};
         s[static_cast<size_t>(Icon::selectorRight)] = {svg("M4 2 8.5 7 4 12"), 12.0f, 14.0f, 2.0f, false};
+        s[static_cast<size_t>(Icon::close)] = {svg("M2.5 2.5 9.5 9.5 M9.5 2.5 2.5 9.5"), 12.0f, 12.0f, 1.6f,
+                                               false};
         return s;
     }();
     return specs[static_cast<size_t>(icon)];
