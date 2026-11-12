@@ -103,6 +103,8 @@ DriftboxAudioProcessorEditor::DriftboxAudioProcessorEditor(DriftboxAudioProcesso
     applySettings();
     processor_.getSettings().addChangeListener(this);
     setSize(w, h);
+    // Controllo degli aggiornamenti: al massimo uno al giorno e solo se abilitato; in background, mai qui.
+    processor_.getSettings().checkForUpdatesIfDue();
 
     lastTickMs_ = juce::Time::getMillisecondCounterHiRes();
     refreshNow();

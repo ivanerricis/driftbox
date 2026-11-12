@@ -37,6 +37,7 @@ TEST_CASE("Settings defaults", "[settings]")
     CHECK(sm.get().tooltips);
     CHECK(sm.get().showCpu);
     CHECK(sm.get().presetFolder.isEmpty());
+    CHECK(sm.get().checkUpdates); // il controllo degli aggiornamenti è attivo di default
     CHECK(sm.loadedOk());
     // Senza cartella impostata vale quella predefinita (qui quella di prova di TestMain).
     CHECK(sm.getEffectivePresetFolder().getFileName() == "Presets");
@@ -136,8 +137,13 @@ TEST_CASE("Reset restores every default, saves and notifies", "[settings]")
     s.tooltips = false;
     s.showCpu = false;
     s.presetFolder = "C:/somewhere";
+    s.checkUpdates = false;
     sm.set(s);
     CHECK(counter.count == 1); // sincrono
+    {
+        SettingsManager saved(t.file);
+        CHECK_FALSE(saved.get().checkUpdates); // salvato nel file
+    }
 
     sm.resetToDefaults();
     CHECK(counter.count == 2);
@@ -145,12 +151,14 @@ TEST_CASE("Reset restores every default, saves and notifies", "[settings]")
     CHECK(sm.get().tooltips);
     CHECK(sm.get().showCpu);
     CHECK(sm.get().presetFolder.isEmpty());
+    CHECK(sm.get().checkUpdates);
 
     SettingsManager reread(t.file);
     CHECK(reread.get().zoomPercent == 100);
     CHECK(reread.get().tooltips);
     CHECK(reread.get().showCpu);
     CHECK(reread.get().presetFolder.isEmpty());
+    CHECK(reread.get().checkUpdates);
     sm.removeChangeListener(&counter);
 }
 

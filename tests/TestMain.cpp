@@ -15,9 +15,19 @@ int main(int argc, char* argv[])
     sandbox.createDirectory();
     driftbox::SettingsManager::setTestOverrides(sandbox.getChildFile("settings.settings"),
                                                 sandbox.getChildFile("Presets"));
+    // Nessun test fa richieste di rete vere: il controllo degli aggiornamenti (attivo di default) fallisce
+    // subito, senza connettersi.
+    driftbox::SettingsManager::setUpdateFetcherOverride(
+        []
+        {
+            driftbox::update::FetchOutcome o;
+            o.error = "network disabled in tests";
+            return o;
+        });
 
     const int result = Catch::Session().run(argc, argv);
 
+    driftbox::SettingsManager::setUpdateFetcherOverride({});
     driftbox::SettingsManager::setTestOverrides({}, {});
     sandbox.deleteRecursively();
     return result;
