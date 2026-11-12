@@ -21,7 +21,15 @@ inline constexpr int kDefaultUiHeight = 440;
 class DriftboxAudioProcessor final : public juce::AudioProcessor, private juce::Timer
 {
 public:
+    // Coppia di canali (L, R).
+    using ChannelPair = std::pair<int, int>;
+
+    // Nuova istanza: sceglie una coppia casuale (L in 1..64, R = L % 64 + 1) e la usa come DEFAULT dei
+    // parametri Channel L / R, quindi valore iniziale == default (il reset con Ctrl-click torna a questa
+    // coppia). Uno stato salvato la sostituisce.
     DriftboxAudioProcessor();
+    // Come sopra ma con la coppia data (per i test); i valori sono limitati a 1..64.
+    explicit DriftboxAudioProcessor(ChannelPair initialChannels);
     ~DriftboxAudioProcessor() override;
 
     void prepareToPlay(double sampleRate, int samplesPerBlock) override;
@@ -110,8 +118,10 @@ private:
 
     class UndoRecorder;
 
-    // Estrae una coppia di canali (L, R = L % 64 + 1) diversa da quella corrente.
-    std::pair<int, int> drawChannelPair() const;
+    // Estrae una coppia di canali (L, R = L % 64 + 1) diversa da (avoidL, avoidR).
+    static ChannelPair drawChannelPair(int avoidL, int avoidR);
+    // Estrae una coppia di canali diversa da quella corrente.
+    ChannelPair drawChannelPair() const;
 
     juce::UndoManager undoManager_{kUndoMaxUnits, kUndoMinTransactions}; // sopravvive ad apvts_ e al recorder
     juce::AudioProcessorValueTreeState apvts_;

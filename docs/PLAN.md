@@ -138,7 +138,7 @@ Ogni deviazione vale: **valore_profilo × Drift × Tolleranza × massimo**. Le d
 ### Randomize e stato delle tolleranze
 *(Sostituisce il modello a seed: `driftSeed` e `SeedChangeAction` non esistono più.)*
 - `processor.randomize()` (message thread) sceglie L casuale in 1..64 e R = L % 64 + 1, diversa dalla coppia corrente, e imposta `chanL` e `chanR` come UN solo passo di undo "Randomize" (`beginNewTransaction("Randomize")`, gesti annidati su L e R uniti dall'`UndoRecorder`, che non rinomina la transazione mentre `randomize()` è attivo).
-- Una nuova istanza sceglie nel costruttore una coppia casuale come `randomize()`, ma senza passo di undo: le tolleranze sono generate all'avvio della sessione e due istanze nuove non suonano uguali per caso. Il default dei parametri (reset, Ctrl-click) resta 1/2.
+- Una nuova istanza sceglie nel costruttore una coppia casuale come `randomize()`, ma senza passo di undo: le tolleranze sono generate all'avvio della sessione e due istanze nuove non suonano uguali per caso. La coppia è il default dei parametri `chanL`/`chanR` di quell'istanza (valore iniziale == default, come richiede CLAP; reset e Ctrl-click tornano a quella coppia).
 - L'audio thread vede il cambio dei parametri e fa il crossfade di 250 ms descritto sopra.
 - Stato: tag `DRIFTBOX_STATE`, che contiene:
   - l'albero APVTS (con `chanL` e `chanR`)

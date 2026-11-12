@@ -36,8 +36,8 @@ for each side s (0 = L, 1 = R):
 
 | ID | Type | Range | Default |
 |---|---|---|---|
-| `chanL` | int | 1..64 ("Channel L") | 1 |
-| `chanR` | int | 1..64 ("Channel R") | 2 |
+| `chanL` | int | 1..64 ("Channel L") | random per new instance |
+| `chanR` | int | 1..64 ("Channel R") | L % 64 + 1 (the instance's pair) |
 | `drift` | float | 0..1 (shown as %) | 0.5 |
 | `freqTol` | float | 0..1 | 0.5 |
 | `phaseTol` | float | 0..1 | 0.5 |
@@ -66,7 +66,7 @@ The channels are ordinary parameters, so they are saved with the parameter tree.
 
 - **Versions**: `setStateInformation` ignores a state whose `stateVersion` or `profileVersion` is newer than the plugin's. A missing version counts as 1. Older versions go through `migrateState()`.
 - **Reopening a session**: the restored `chanL`/`chanR` are read at the first block after `prepareToPlay`, so there is no fade and a reopened session sounds bit-identical from the first sample. A state restored during playback fades like any automation.
-- **New instances**: the constructor picks a random channel pair (as `randomize()` does, but without an undo step), so two new instances do not sound identical by chance. The parameter defaults (used by reset and Ctrl-click) stay 1 and 2. A restored state overwrites everything.
+- **New instances**: the constructor draws a random channel pair (L in 1..64, R = L % 64 + 1) BEFORE building the parameter layout and passes it as the default of `chanL`/`chanR`, so the initial value equals the default (CLAP requires it, and clap-validator checks it) and reset / Ctrl-click return to that instance's pair. Two new instances do not sound identical by chance. Tests inject a fixed pair with `DriftboxAudioProcessor(ChannelPair)`. A restored state overwrites everything, and `setStateInformation()` tells the host that values changed (`updateHostDisplay` with `programChanged`, which the CLAP wrapper turns into `params.rescan(VALUES)`; clap-validator requires it).
 - **Randomize and undo**: `randomize()` (message thread) picks L in 1..64 and R = L % 64 + 1, different from the current pair, and applies both as ONE undo step named "Randomize" (a transaction with nested gestures on both parameters). Parameter gestures from the UI are recorded as one step each by `UndoRecorder`; host automation is not. Restoring a state clears the history. The constructor leaves no step in the history.
 - **Legacy**: a `driftSeed` property from development builds is dropped on load.
 - **Presets**: they store and restore only the seven parameters listed in [Presets and settings](#presets-and-settings). They never contain or overwrite `chanL`, `chanR`, `bypass`, `advancedOpen`, `uiWidth` or `uiHeight`.

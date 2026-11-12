@@ -54,13 +54,13 @@ std::unique_ptr<juce::AudioParameterInt> channelParam(const juce::String& id, co
 }
 } // namespace
 
-juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
+juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout(int defaultChanL, int defaultChanR)
 {
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
 
     // Automatabili: il cambio di canale è senza click (crossfade delle tolleranze) e non cambia la latenza.
-    layout.add(channelParam(pid::chanL, "Channel L", 1));
-    layout.add(channelParam(pid::chanR, "Channel R", 2));
+    layout.add(channelParam(pid::chanL, "Channel L", defaultChanL));
+    layout.add(channelParam(pid::chanR, "Channel R", defaultChanR));
     layout.add(unitParam(pid::drift, "Drift Amount", 0.5f));
     layout.add(unitParam(pid::freqTol, "Frequency Tolerance", 0.5f));
     layout.add(unitParam(pid::phaseTol, "Phase Tolerance", 0.5f));

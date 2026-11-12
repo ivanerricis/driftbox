@@ -11,7 +11,10 @@ namespace driftbox
 inline constexpr int kNumParameters = 10;
 
 // Layout completo dei parametri. Le percentuali sono memorizzate in 0..1 e mostrate come 0..100 %.
-juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
+// defaultChanL / defaultChanR sono i default (e quindi i valori iniziali) dei parametri Channel L / R:
+// ogni istanza ci passa la propria coppia casuale, così valore iniziale e default coincidono.
+juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout(int defaultChanL = 1,
+                                                                          int defaultChanR = 2);
 
 // Puntatori ai valori grezzi (denormalizzati), leggibili in sicurezza dall'audio thread.
 struct ParamRefs
