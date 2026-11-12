@@ -27,7 +27,7 @@ jobs:
       - id: v
         name: Tag must match CMake project version
         env:
-          VERSION: ${{ github.event_name == 'push' && github.ref_name || inputs.version }}
+          VERSION: ${{ github.ref_type == 'tag' && github.ref_name || inputs.version }}
         run: |
           scripts/ci/check_version.sh "$VERSION"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -72,7 +72,7 @@ jobs:
 
       # Dry run (workflow_dispatch): keep the assets as a workflow artifact, no release, no tag.
       - name: Upload release assets (dry run)
-        if: github.event_name == 'workflow_dispatch'
+        if: github.ref_type != 'tag'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-assets-${{ env.VERSION }}
@@ -87,7 +87,7 @@ jobs:
           if-no-files-found: error
 
       - name: Publish GitHub release
-        if: github.event_name == 'push'
+        if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           body_path: RELEASE_NOTES.md
