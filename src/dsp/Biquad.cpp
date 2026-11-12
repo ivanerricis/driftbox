@@ -38,6 +38,21 @@ void sanitizeParams(double sampleRate, double& hz, double& q) noexcept
 }
 } // namespace
 
+double BiquadCoeffs::magnitudeDb(double sampleRate, double hz) const noexcept
+{
+    if (b0 == 1.0f && b1 == 0.0f && b2 == 0.0f && a1 == 0.0f && a2 == 0.0f)
+    {
+        return 0.0; // identità esatta
+    }
+    const double w = 2.0 * kPi * hz / sampleRate;
+    const double c1 = std::cos(w), s1 = std::sin(w), c2 = std::cos(2.0 * w), s2 = std::sin(2.0 * w);
+    // H(z) = (b0 + b1 z^-1 + b2 z^-2) / (1 + a1 z^-1 + a2 z^-2) con z^-k = cos(kw) - j sin(kw).
+    const double nr = b0 + b1 * c1 + b2 * c2, ni = -(b1 * s1 + b2 * s2);
+    const double dr = 1.0 + a1 * c1 + a2 * c2, di = -(a1 * s1 + a2 * s2);
+    const double num = nr * nr + ni * ni, den = dr * dr + di * di;
+    return den > 0.0 && num > 0.0 ? 10.0 * std::log10(num / den) : 0.0;
+}
+
 BiquadCoeffs BiquadCoeffs::lowShelf(double sampleRate, double hz, double q, double gainDb) noexcept
 {
     if (gainDb == 0.0)

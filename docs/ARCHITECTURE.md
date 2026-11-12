@@ -109,6 +109,22 @@ DSP module conventions (same as Pentagrit):
 - `prepare()` may allocate, and is only called from `prepareToPlay`.
 - `reset()`, `update()`, `setSettings()` and `process*()` are `noexcept` and allocation-free.
 
+## Editor (T7)
+
+- `PluginEditor` holds a `Content` component laid out at the base size 720 x 440 and scaled by a transform to the
+  editor size (fixed aspect ratio, zoom 75 % to 200 %; `setZoom()` resizes the window, the size is saved with
+  `setUiSize()`). Host DPI scaling is left to the host.
+- `src/ui/`: `Theme.h` (palette and sizes, see `docs/design/THEME.md`), `Fonts` (embedded IBM Plex), `LookAndFeel`,
+  `Widgets` (knobs, channel selector, buttons, stereo meter), `TopBar`, `PresetBar` (T8 hooks), `Panels`
+  (channel, tolerance graph, drift, advanced, output) and `Footer`.
+- A 30 Hz timer reads the parameters; the tolerance graph recomputes and repaints only when its inputs change.
+  The curve comes from `toleranceDeviationDb()` (`src/dsp/ToleranceResponse.h`), which uses
+  `DriftChannel::design()`, the same design values the engine applies.
+- The UI only reads atomics (`MeterState`, parameters) and never runs in the audio path. `MeterState` has per-side
+  output peaks (`outPeakDbL`, `outPeakDbR`) for the stereo meter.
+- Hooks for T8: `PresetBar::onPrev/onNext/onOpenList/onOpenActions` and `setPresetName()`,
+  `DriftboxAudioProcessorEditor::onSettings`, `showCpu`, `setZoom()`, `setTooltipsEnabled()`, `content()`.
+
 ## Build notes
 
 - `src/` sources are collected with a CMake glob (`CONFIGURE_DEPENDS`) into the `DriftboxCore` INTERFACE target, which the plugin and the tests share. A new file needs no CMake edit, but test files must be listed in `tests/CMakeLists.txt`.
