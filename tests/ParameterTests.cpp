@@ -50,7 +50,8 @@ TEST_CASE("Parameter ranges and defaults", "[params]")
           Approx(static_cast<float>(kDefaultChannelIndex)));
     CHECK(apvts.getRawParameterValue(pid::drift)->load() == Approx(0.5f));
     CHECK(apvts.getRawParameterValue(pid::noise)->load() == Approx(0.0f));
-    CHECK(apvts.getRawParameterValue(pid::outGain)->load() == Approx(0.0f));
+    // Margine assoluto: il default 0 dB passa da un valore normalizzato e su macOS non torna esattamente a 0.
+    CHECK(apvts.getRawParameterValue(pid::outGain)->load() == Approx(0.0f).margin(1.0e-4));
     CHECK(apvts.getRawParameterValue(pid::bypass)->load() == Approx(0.0f));
 
     auto& out = param(p, pid::outGain);

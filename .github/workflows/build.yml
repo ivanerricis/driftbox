@@ -1,0 +1,195 @@
+name: build
+
+# Reusable build/test/validate/package workflow, called from ci.yml (and later release.yml, T9).
+on:
+  workflow_call:
+    inputs:
+      platforms:
+        description: 'JSON array of platforms to build: any of "windows", "macos", "linux"'
+        type: string
+        default: '["windows","macos","linux"]'
+      version:
+        description: 'Version used in the zip names (tag or X.Y.Z); defaults to the CMakeLists.txt version'
+        type: string
+        default: ''
+      installers:
+        description: 'Also build the Windows setup .exe and the macOS .pkg (release only). Not wired yet.'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  CMAKE_VERSION: 3.31.6
+  CPM_SOURCE_CACHE: ${{ github.workspace }}/.cpm
+
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - id: matrix
+        env:
+          PLATFORMS: ${{ inputs.platforms }}
+        run: |
+          all='[
+            {"name":"windows","os":"windows-2022","preset":"ci-windows","package":"windows","tools_os":"Windows"},
+            {"name":"macos","os":"macos-15","preset":"ci-macos","package":"macos","tools_os":"macOS"},
+            {"name":"linux","os":"ubuntu-22.04","preset":"ci-linux","package":"linux","tools_os":"Linux"}
+          ]'
+          matrix="$(jq -c --argjson want "$PLATFORMS" '{include: map(select(.name as $n | $want | index($n)))}' <<<"$all")"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: build (${{ matrix.name }})
+    needs: plan
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: lukka/get-cmake@f86dd60acae0d132056913e248bdabf0e0580b7a # v4.4.5
+        with:
+          cmakeVersion: ${{ env.CMAKE_VERSION }}
+
+      - name: Install Linux dependencies
+        if: matrix.name == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk libcurl4-openssl-dev libfreetype-dev \
+            libfontconfig1-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libglu1-mesa-dev \
+            mesa-common-dev xvfb
+
+      - name: Set up MSVC environment
+        if: matrix.name == 'windows'
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+
+      - name: Set up sccache
+        if: matrix.name == 'windows'
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+
+      - name: Set up ccache
+        if: matrix.name != 'windows'
+        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+        with:
+          key: ${{ matrix.name }}
+          max-size: 500M
+
+      - name: Cache CPM sources
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CPM_SOURCE_CACHE }}
+          key: cpm-${{ matrix.name }}-${{ hashFiles('cmake/Dependencies.cmake') }}
+          restore-keys: cpm-${{ matrix.name }}-
+
+      - name: Select compiler launcher
+        shell: bash
+        run: |
+          if [[ "${{ matrix.name }}" == windows ]]; then
+            echo "LAUNCHER=sccache" >> "$GITHUB_ENV"
+            echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+          else
+            echo "LAUNCHER=ccache" >> "$GITHUB_ENV"
+          fi
+
+      - name: Configure
+        shell: bash
+        run: |
+          cmake --preset ${{ matrix.preset }} \
+            -DCMAKE_C_COMPILER_LAUNCHER="$LAUNCHER" \
+            -DCMAKE_CXX_COMPILER_LAUNCHER="$LAUNCHER"
+
+      - name: Build (Release)
+        run: cmake --build --preset ${{ matrix.preset }} --parallel
+
+      - name: Test
+        shell: bash
+        run: |
+          if [[ "${{ matrix.name }}" == linux ]]; then
+            xvfb-run -a ctest --preset ${{ matrix.preset }}
+          else
+            ctest --preset ${{ matrix.preset }}
+          fi
+
+      - name: Locate plugin artefacts
+        shell: bash
+        run: |
+          build_dir="build/${{ matrix.preset }}"
+          vst3="$(find "$build_dir" -path '*_artefacts*' -type d -name 'Driftbox.vst3' -print -quit)"
+          clap="$(find "$build_dir" -path '*_artefacts*' -name 'Driftbox.clap' -print -quit)"
+          au="$(find "$build_dir" -path '*_artefacts*' -type d -name 'Driftbox.component' -print -quit)"
+          echo "VST3_PATH=$vst3" >> "$GITHUB_ENV"
+          echo "CLAP_PATH=$clap" >> "$GITHUB_ENV"
+          echo "AU_PATH=$au" >> "$GITHUB_ENV"
+          if [[ -z "$vst3" ]]; then
+            echo "VST3 artefact not found; artefact dirs:"
+            find "$build_dir" -maxdepth 3 -name '*_artefacts*'
+            exit 1
+          fi
+
+      - name: pluginval (strictness 10)
+        shell: bash
+        run: |
+          pluginval="$(scripts/ci/get_pluginval.sh "${{ matrix.tools_os }}")"
+          if [[ "${{ matrix.name }}" == linux ]]; then
+            xvfb-run -a scripts/ci/run_pluginval.sh "$pluginval" "$VST3_PATH"
+          else
+            scripts/ci/run_pluginval.sh "$pluginval" "$VST3_PATH"
+          fi
+
+      - name: auval
+        if: matrix.name == 'macos'
+        run: |
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R "$AU_PATH" ~/Library/Audio/Plug-Ins/Components/
+          killall -9 AudioComponentRegistrar || true
+          auval -v aufx Drbx Ivnr
+
+      - name: clap-validator (advisory)
+        continue-on-error: true
+        shell: bash
+        run: |
+          validator="$(scripts/ci/get_clap_validator.sh "${{ matrix.tools_os }}")"
+          if [[ "${{ matrix.name }}" == linux ]]; then
+            xvfb-run -a "$validator" validate "$CLAP_PATH"
+          else
+            "$validator" validate "$CLAP_PATH"
+          fi
+
+      - name: Package
+        shell: bash
+        run: scripts/ci/package.sh "${{ matrix.package }}" "build/${{ matrix.preset }}" dist "${{ inputs.version }}"
+
+      # TODO(T9): installer steps (Inno Setup .exe on Windows, pkgbuild .pkg on macOS) go here, gated on
+      # `inputs.installers`. They build from the zip produced by the Package step above.
+
+      - name: Upload package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: driftbox-${{ matrix.package }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/*.exe
+            dist/*.pkg
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Upload validation logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: validation-logs-${{ matrix.name }}
+          path: pluginval-logs
+          retention-days: 7
+          if-no-files-found: ignore
