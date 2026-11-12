@@ -6,15 +6,15 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include <atomic>
-#include <cstdint>
 #include <memory>
+#include <utility>
 
 namespace driftbox
 {
 inline constexpr int kDefaultUiWidth = 720;
 inline constexpr int kDefaultUiHeight = 440;
 
-// Processor di Driftbox: parametri, stato con il seed delle tolleranze, Randomize e undo/redo dei gesti della
+// Processor di Driftbox: parametri (tra cui il canale L e R), stato, Randomize e undo/redo dei gesti della
 // UI. Preset e impostazioni arrivano con il task T8 (vedi docs/PLAN.md).
 class DriftboxAudioProcessor final : public juce::AudioProcessor, private juce::Timer
 {
@@ -51,18 +51,10 @@ public:
     juce::AudioProcessorValueTreeState& getAPVTS() noexcept { return apvts_; }
     MeterState& getMeters() noexcept { return engine_.meters(); }
 
-    // Seed corrente delle tolleranze (message thread o audio thread).
-    std::uint64_t getSeed() const noexcept { return seed_.load(std::memory_order_acquire); }
-
-    // Randomize: nuovo seed casuale (sempre diverso dal corrente), registrato come UN passo di undo
-    // "Randomize". L'audio thread passa al nuovo profilo con un crossfade. SOLO dal message thread.
+    // Randomize: sceglie una coppia di canali a caso (L in 1..64, R = L % 64 + 1), sempre diversa dalla
+    // coppia corrente, e la applica come UN SOLO passo di undo "Randomize". L'audio thread passa ai nuovi
+    // profili con un crossfade. SOLO dal message thread.
     void randomize();
-
-    // Imposta il seed (con crossfade sull'audio thread) SENZA registrare un passo di undo. Pubblico e
-    // documentato, non privato con friend: lo usano la SeedChangeAction (perform/undo) e i test, che devono
-    // poter forzare un seed noto, e due friend solo per questo sarebbero più invasive. Non è API per la UI:
-    // da lì l'unico modo di cambiare il seed è randomize(). Solo dal message thread.
-    void setSeed(std::uint64_t seed) noexcept;
 
     // Cronologia undo dei cambi fatti dalla UI del plugin (SOLO MESSAGE THREAD; l'audio thread non la tocca
     // mai). Un passo per gesto (trascinamento di una manopola, valore digitato, click su un interruttore) e
@@ -88,16 +80,16 @@ private:
     static void migrateState(juce::ValueTree& state, int fromVersion);
 
     class UndoRecorder;
-    class SeedChangeAction;
+
+    // Estrae una coppia di canali (L, R = L % 64 + 1) diversa da quella corrente.
+    std::pair<int, int> drawChannelPair() const;
 
     juce::UndoManager undoManager_{kUndoMaxUnits, kUndoMinTransactions}; // sopravvive ad apvts_ e al recorder
     juce::AudioProcessorValueTreeState apvts_;
     ParamRefs params_;
     DriftEngine engine_;
-    std::atomic<std::uint64_t> seed_{0};
-    // Vero dopo il ripristino di uno stato: il prossimo blocco applica il seed SENZA crossfade, così la
-    // sessione riaperta suona identica fin dal primo campione.
-    std::atomic<bool> seedSnapPending_{false};
+    // Vero dentro randomize(): il recorder non apre una transazione propria e il passo resta "Randomize".
+    bool randomizing_ = false;
     std::atomic<bool> pendingUndoClear_{false};
     double currentSampleRate_ = 0.0;
     std::unique_ptr<UndoRecorder> undoRecorder_; // ultimo: distrutto per primo

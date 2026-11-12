@@ -43,14 +43,14 @@ std::unique_ptr<juce::AudioParameterFloat> unitParam(const juce::String& id, con
         Attr().withStringFromValueFunction(percentText).withValueFromStringFunction(percentValue));
 }
 
-juce::StringArray channelNames()
+std::unique_ptr<juce::AudioParameterInt> channelParam(const juce::String& id, const juce::String& name,
+                                                      int def)
 {
-    juce::StringArray names;
-    for (const int n : kChannelChoices)
-    {
-        names.add(juce::String(n));
-    }
-    return names;
+    // Il testo digitato ("12") è il numero di canale stesso: il parser accetta anche il testo mostrato.
+    return std::make_unique<juce::AudioParameterInt>(
+        makeID(id), name, 1, kNumConsoleChannels, def,
+        juce::AudioParameterIntAttributes().withValueFromStringFunction([](const juce::String& text)
+                                                                        { return text.getIntValue(); }));
 }
 } // namespace
 
@@ -58,9 +58,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
 {
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
 
-    // Automatabile: il cambio del numero di voci è senza click e non cambia la latenza.
-    layout.add(std::make_unique<juce::AudioParameterChoice>(makeID(pid::channels), "Channels", channelNames(),
-                                                            kDefaultChannelIndex));
+    // Automatabili: il cambio di canale è senza click (crossfade delle tolleranze) e non cambia la latenza.
+    layout.add(channelParam(pid::chanL, "Channel L", 1));
+    layout.add(channelParam(pid::chanR, "Channel R", 2));
     layout.add(unitParam(pid::drift, "Drift Amount", 0.5f));
     layout.add(unitParam(pid::freqTol, "Frequency Tolerance", 0.5f));
     layout.add(unitParam(pid::phaseTol, "Phase Tolerance", 0.5f));
@@ -76,22 +76,22 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
 }
 
 ParamRefs::ParamRefs(juce::AudioProcessorValueTreeState& apvts)
-    : channels(apvts.getRawParameterValue(pid::channels)), drift(apvts.getRawParameterValue(pid::drift)),
-      freqTol(apvts.getRawParameterValue(pid::freqTol)), phaseTol(apvts.getRawParameterValue(pid::phaseTol)),
-      gainTol(apvts.getRawParameterValue(pid::gainTol)),
+    : chanL(apvts.getRawParameterValue(pid::chanL)), chanR(apvts.getRawParameterValue(pid::chanR)),
+      drift(apvts.getRawParameterValue(pid::drift)), freqTol(apvts.getRawParameterValue(pid::freqTol)),
+      phaseTol(apvts.getRawParameterValue(pid::phaseTol)), gainTol(apvts.getRawParameterValue(pid::gainTol)),
       saturation(apvts.getRawParameterValue(pid::saturation)), noise(apvts.getRawParameterValue(pid::noise)),
       outGain(apvts.getRawParameterValue(pid::outGain)), bypass(apvts.getRawParameterValue(pid::bypass))
 {
-    jassert(channels && drift && freqTol && phaseTol && gainTol && saturation && noise && outGain && bypass);
+    jassert(chanL && chanR && drift && freqTol && phaseTol && gainTol && saturation && noise && outGain &&
+            bypass);
 }
 
 EngineSettings ParamRefs::snapshot() const noexcept
 {
     constexpr auto relaxed = std::memory_order_relaxed;
     EngineSettings s;
-    const int idx = juce::jlimit(0, static_cast<int>(kChannelChoices.size()) - 1,
-                                 juce::roundToInt(channels->load(relaxed)));
-    s.numVoices = kChannelChoices[static_cast<size_t>(idx)];
+    s.channelL = juce::jlimit(1, kNumConsoleChannels, juce::roundToInt(chanL->load(relaxed)));
+    s.channelR = juce::jlimit(1, kNumConsoleChannels, juce::roundToInt(chanR->load(relaxed)));
     s.drift01 = drift->load(relaxed);
     s.freqTol01 = freqTol->load(relaxed);
     s.phaseTol01 = phaseTol->load(relaxed);

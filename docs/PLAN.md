@@ -1,16 +1,31 @@
 # Driftbox — piano di implementazione
 
+## Revisione 2026-11-12: selettore di canale L/R
+
+**Decisione del maintainer** (presa dopo che DSP, motore, processor e CI erano già fatti): le voci interne 2/4/8/16 (mediate per lato) e il seed nascosto sono SOSTITUITI da un **numero di canale per lato**: L e R, ognuno da 1 a 64, come una striscia di un mixer virtuale.
+- Ogni numero di canale corrisponde a un set di tolleranze FISSO e deterministico, identico su ogni piattaforma (`channelProfile(canale)`, formato congelato v1).
+- Una sola catena DSP (`DriftChannel`) per lato; in mono si elabora solo L.
+- Randomize sceglie una coppia di canali a caso (L casuale, R = L % 64 + 1, diversa dalla corrente) ed è un solo passo di undo.
+- Tutto è visibile, salvato e automatabile come parametro: `chanL` e `chanR` (interi 1..64, default 1 e 2). Il parametro `channels` e il seed (`driftSeed`) non esistono più; i parametri diventano 10.
+- Cambio di canale: crossfade di 250 ms delle tolleranze del lato, senza click; lati indipendenti.
+- Una nuova istanza parte con una coppia casuale (le tolleranze sono generate all'avvio della sessione); lo stato ripristinato sovrascrive tutto e, letto prima del primo blocco, suona identico dal primo campione.
+- UI (solo documentazione, il codice dell'editor non cambia): i controlli Freq/Phase/Gain/Saturation/Noise finiranno in un pannello "Advanced" apribile; restano in vista L/R, Drift, Output, Randomize e Bypass. I parametri restano tutti invariati.
+
+Le sezioni qui sotto che parlano di voci 2/4/8/16, pesi, seed e `SeedChangeAction` sono **superate** da questa revisione dove in contrasto: fanno fede questa sezione e `docs/ARCHITECTURE.md`.
+
+---
+
 ## Context
-Nuovo plugin audio **Driftbox** (JUCE 8, C++20, CMake), separato da Pentagrit ma con la stessa qualità tecnica, la stessa organizzazione e un'UI coerente. Driftbox applica un "tolerance modeling" originale: N voci interne con piccole differenze pseudocasuali e stabili di risposta in frequenza, fase, guadagno, saturazione e rumore. Le differenze restano fisse finché l'utente non preme Randomize e vengono salvate nello stato del progetto. Repo pubblico `ivanerricis/driftbox`, AGPL-3.0-or-later.
+Nuovo plugin audio **Driftbox** (JUCE 8, C++20, CMake), separato da Pentagrit ma con la stessa qualità tecnica, la stessa organizzazione e un'UI coerente. Driftbox applica un "tolerance modeling" originale: un canale (1..64) per lato con piccole differenze pseudocasuali e stabili di risposta in frequenza, fase, guadagno, saturazione e rumore. Le differenze sono fisse per ogni numero di canale, restano finché l'utente non cambia canale o preme Randomize e vengono salvate nello stato del progetto (i parametri `chanL` e `chanR`). Repo pubblico `ivanerricis/driftbox`, AGPL-3.0-or-later.
 
 Analisi di Pentagrit (commit `44c2fa9`) fatta su: CMake, preset, `cmake/`, processor/editor, `dsp/`, `params/`, `presets/`, `settings/`, `ui/`, `tests/`, docs, `scripts/ci`, `scripts/dev`, `installer/`, workflow GitHub, `cliff.toml`, `.clang-*`.
 
 ### Decisioni prese con l'utente
 | Tema | Decisione |
 |---|---|
-| Mappatura stereo → voci | N/2 voci per lato; ogni voce riceve il segnale del suo lato; ogni uscita è la media pesata delle sue voci (guadagno unitario). Con 2 voci si ha la classica differenza L/R |
+| Mappatura stereo → canali | **Superata dalla revisione 2026-11-12.** Una catena per lato (canale 1..64 per L e per R); le voci 2/4/8/16 mediate per lato non esistono più |
 | Drift Amount | È il fattore principale: scala **tutto**, anche Saturation e Noise. A Drift = 0 il plugin è trasparente con qualunque impostazione |
-| Randomize | Azione della UI, non un parametro. Cambia il seed, che viene salvato nello stato (non automatabile) |
+| Randomize | Azione della UI, non un parametro. Sceglie una coppia di canali a caso e imposta `chanL` e `chanR` (un solo passo di undo) |
 | Artefatti | `Driftbox-vX.Y.Z-windows-setup.exe`, `-macos.pkg`, `-windows.zip`, `-macos.zip`, `-linux.tar.gz`, `SHA256SUMS.txt`. Gli script `scripts/ci/*` sono adattati da Pentagrit; `scripts/build-release.{ps1,sh}` e `scripts/create-release-artifacts.sh` sono wrapper locali sottili |
 | Extra da Pentagrit | Impostazioni utente + zoom; preset di fabbrica + utente (versione ridotta); undo/redo. **Esclusi**: stili multipli e update checker |
 | Standalone | **Nessuno**: il formato non viene compilato né distribuito. Setup Windows = VST3 e CLAP; pkg macOS = VST3, CLAP e AU |
@@ -73,11 +88,9 @@ Il resto sono script e configurazioni, riusati e adattati:
 ```
 processBlock (stereo in/out, mono ammesso come in Pentagrit)
   └─ DriftEngine
-       ├─ seed atomico → DriftProfile::generate(seed)   (puro, deterministico, senza allocazioni)
-       ├─ crossfade del profilo (~250 ms) al Randomize
-       ├─ 16 DriftChannel preallocati; voce v → lato v & 1
-       │     pesi per voce con rampa lineare (50 ms), Σ pesi per lato = 1 sempre
-       ├─ uscita lato = Σ peso_v · voce_v(x_lato)
+       ├─ chanL / chanR (parametri) → channelProfile(canale)   (puro, deterministico, senza allocazioni)
+       ├─ crossfade delle tolleranze (~250 ms) al cambio di canale, indipendente per lato
+       ├─ 2 DriftChannel preallocati: lato 0 = L, lato 1 = R (in mono solo L)
        ├─ Output Gain (smoothed 20 ms)
        ├─ SafetyCeiling (soft knee da −1 dBFS, asintoto a 0 dBFS, latenza 0)
        ├─ sanitizzazione NaN/Inf
@@ -92,14 +105,14 @@ processBlock (stereo in/out, mono ammesso come in Pentagrit)
 ### Moduli DSP (`src/dsp/`)
 | File | Contenuto |
 |---|---|
-| `DspTypes.h` | `enum class ChannelCount {two, four, eight, sixteen}`, `struct EngineSettings {numVoices, drift01, freqTol01, phaseTol01, gainTol01, saturation01, noise01, outGainDb, bypass}`, `kMaxVoices = 16` |
+| `DspTypes.h` | `kNumConsoleChannels = 64`, `struct EngineSettings {channelL, channelR, drift01, freqTol01, phaseTol01, gainTol01, saturation01, noise01, outGainDb, bypass}` |
 | `DspUtils.h` | Ripreso da Pentagrit (fastTanh, dbToGain, timeToCoeff, clampTo) più `sanitize(float)` |
 | `Prng.h` | `SplitMix64` (seed → stream) con mappatura propria da intero a float in [-1, 1). **Non** si usa `std::*_distribution`, il cui output dipende dall'implementazione: lo stesso seed deve suonare uguale su Windows, macOS e Linux |
-| `DriftProfile.h/.cpp` | `struct VoiceTolerance {lowShelfDb, lowShelfHzOct, highShelfDb, highShelfHzOct, bellDb, bellHzOct, phaseUs01, gainDb, driveSpread, noiseLevelDb}` normalizzati in [-1, 1] o [0, 1]; `struct DriftProfile {std::array<VoiceTolerance, 16>; uint64 seed; static DriftProfile generate(uint64 seed, int profileVersion = 1) noexcept; static lerp(a, b, t)}`; `kProfileVersion = 1` |
+| `DriftProfile.h/.cpp` | `struct VoiceTolerance {lowShelfDb, lowShelfOct, highShelfDb, highShelfOct, bellDb, bellPos01, delay01, gainDb, driveSpread, noiseLevel}` normalizzati in [-1, 1] o [0, 1]; `struct ChannelProfile {VoiceTolerance tol; uint32 noiseSeed;}`; `ChannelProfile channelProfile(int canale, int version = 1) noexcept` (formato congelato v1); `VoiceTolerance lerp(a, b, t)`; `kProfileVersion = 1` |
 | `Biquad.h` | Biquad TDF-II float (coefficienti RBJ: low shelf, high shelf, bell); i coefficienti identità sono esatti a 0 dB |
 | `DriftChannel.h/.cpp` | Una voce: `prepare(sr)`, `reset()`, `setTargets(const VoiceTolerance&, scaled amounts)` a control rate, `processSample` inline o `process(span)` |
-| `DriftEngine.h/.cpp` | Multi-voce, pesi, crossfade del profilo, output stage, bypass, meter |
-| `Meters.h` | Picco in ingresso e in uscita, `cpuLoad`, `std::array<atomic<float>,16> voiceGainDb` per il display |
+| `DriftEngine.h/.cpp` | Due catene (L e R), crossfade delle tolleranze al cambio di canale, output stage, bypass, meter |
+| `Meters.h` | Picco in ingresso e in uscita, `cpuLoad`, (il display dei canali userà i profili, non i meter) |
 
 ### Catena per voce (DriftChannel)
 Ogni deviazione vale: **valore_profilo × Drift × Tolleranza × massimo**. Le deviazioni sono *a* = Drift × Tol e si ricalcolano a control rate (ogni 32 campioni) da valori smoothed. Sono piccolissime, quindi non producono zipper.
@@ -107,39 +120,40 @@ Ogni deviazione vale: **valore_profilo × Drift × Tolleranza × massimo**. Le d
 | Stadio | Implementazione | Massimo a 100% / 100% |
 |---|---|---|
 | Frequenza | low shelf (≈ 150 Hz ± ½ ottava), bell Q 0.7 (log-random 400 Hz – 3 kHz), high shelf (≈ 8 kHz ± ½ ottava) | shelf ±1.0 dB, bell ±0.75 dB |
-| Fase | allpass del primo ordine `a = (1−d)/(1+d)`, con d = τ·fs e τ ∈ [0, τmax]. È un piccolo ritardo frazionario, **sempre positivo**: nessuna inversione e nessuna cancellazione. Con d = 0 vale a = 1, cioè identità esatta | τmax = 5 µs; differenza massima tra due voci 10 µs, cioè −0.44 dB a 10 kHz sulla somma |
+| Fase | allpass del primo ordine `a = (1−d)/(1+d)`, con d = τ·fs e τ ∈ [0, τmax]. È un piccolo ritardo frazionario, **sempre positivo**: nessuna inversione e nessuna cancellazione. Con d = 0 vale a = 1, cioè identità esatta | τmax = 5 µs; differenza massima tra due canali 5 µs, cioè circa −0.1 dB a 10 kHz sulla somma mono |
 | Guadagno | lineare, smoothed | ±1.0 dB (nel range richiesto 0.1–1 dB) |
 | Saturazione | `y = tanh(k·x)/k` con `k = 1 + Sat·Drift·(1 + 0.15·spread_v)`; guadagno unitario per piccoli segnali; saltata quando k = 1 | k ≤ 2.15 (drive massimo circa +6.6 dB, molto dolce) |
-| Rumore | xorshift per voce (seed derivato), bianco filtrato da un passa-basso one-pole a 12 kHz, livello per voce ±1.5 dB dal profilo, scalato per √(N/2) così il rumore in uscita non dipende da N | circa −84 dBFS RMS in uscita |
+| Rumore | xorshift per catena (seed del canale), bianco filtrato da un passa-basso one-pole a 12 kHz, livello ±1.5 dB dal profilo del canale | circa −84 dBFS RMS in uscita |
 
-- **Trasparenza a Drift = 0**: biquad identità, a = 1, guadagno 1, saturazione saltata, rumore 0. Ogni lato è la media di voci identiche, cioè l'ingresso (errore solo di arrotondamento float).
-- Più voci producono una media più fitta e quindi una deviazione netta più piccola: 2 voci danno il massimo carattere L/R, 16 un "ensemble" più morbido. Il comportamento va documentato nel README.
+- **Trasparenza a Drift = 0**: biquad identità, a = 1, guadagno 1, saturazione saltata, rumore 0. Ogni lato è l'ingresso stesso (uscita bit-identica).
+- Canali diversi su L e R danno il carattere stereo; lo stesso canale su entrambi i lati produce due uscite identiche (a rumore 0). Da documentare nel README.
 
-### Cambio canali senza click
-- Le 16 voci sono preallocate in `prepare()`. Il peso target è 2/N per le voci v < N e 0 per le altre.
-- Rampa lineare di 50 ms sullo stesso orologio per tutte le voci, quindi Σ pesi per lato resta 1 anche durante la rampa. Se il cambio arriva a rampa in corso, si riparte dai pesi correnti.
-- Una voce con peso esattamente 0 non viene elaborata. Quando riparte, `reset()` azzera lo stato e la rampa da 0 maschera il piccolo transitorio iniziale (i coefficienti sono vicini all'identità).
-- I valori dei 4 canali (2/4/8/16) mantengono le voci basse comuni, quindi il passaggio 4 → 8 aggiunge solo le voci 4..7.
-- `channels` resta **automatabile** perché il cambio è senza click e senza variazione di latenza. Diversamente da `numBands` di Pentagrit, che invece cambia la latenza.
+### Cambio di canale senza click
+*(Sostituisce la vecchia sezione sui pesi delle voci 2/4/8/16, rampa da 50 ms.)*
+- Le due catene (L e R) sono preallocate in `prepare()`. Il target di ogni lato è `channelProfile(canale)`.
+- Al cambio di canale di un lato, le tolleranze di quel lato passano dal valore effettivo corrente (anche a fade in corso) al profilo del nuovo canale con un crossfade lineare di 250 ms (`lerp`). Il seed del rumore passa subito al nuovo, senza reset dei filtri. I due lati hanno fade indipendenti.
+- Al primo blocco dopo `prepare()`/`reset()` non c'è fade: i valori sono i target (sessione riaperta identica fin dal primo campione).
+- `chanL` e `chanR` sono **automatabili** perché il cambio è senza click e senza variazione di latenza. Diversamente da `numBands` di Pentagrit, che invece cambia la latenza.
 
 ### Randomize e stato delle tolleranze
-- Il seed `uint64` viene generato al primo avvio dell'istanza (`juce::Random::getSystemRandom()`).
-- `processor.randomize()` (message thread) crea un nuovo seed, lo pubblica in un `std::atomic<uint64_t>` e lo registra come passo di undo (`SeedChangeAction`). Il seed non è un parametro, quindi serve un'azione dedicata nell'`UndoManager` di Pentagrit.
-- L'audio thread vede il seed cambiato, genera il profilo target (operazione economica, su `std::array`) e fa un crossfade in ~250 ms tra i valori del profilo vecchio e nuovo, così non ci sono click.
+*(Sostituisce il modello a seed: `driftSeed` e `SeedChangeAction` non esistono più.)*
+- `processor.randomize()` (message thread) sceglie L casuale in 1..64 e R = L % 64 + 1, diversa dalla coppia corrente, e imposta `chanL` e `chanR` come UN solo passo di undo "Randomize" (`beginNewTransaction("Randomize")`, gesti annidati su L e R uniti dall'`UndoRecorder`, che non rinomina la transazione mentre `randomize()` è attivo).
+- Una nuova istanza sceglie nel costruttore una coppia casuale come `randomize()`, ma senza passo di undo: le tolleranze sono generate all'avvio della sessione e due istanze nuove non suonano uguali per caso. Il default dei parametri (reset, Ctrl-click) resta 1/2.
+- L'audio thread vede il cambio dei parametri e fa il crossfade di 250 ms descritto sopra.
 - Stato: tag `DRIFTBOX_STATE`, che contiene:
-  - l'albero APVTS
+  - l'albero APVTS (con `chanL` e `chanR`)
   - `stateVersion = 1`
-  - `driftSeed` (stringa esadecimale a 16 cifre)
   - `profileVersion = 1`
   - `uiWidth` e `uiHeight`
-- `setStateInformation`: rifiuta versioni future, `migrateState()` come in Pentagrit, ripristina il seed **senza crossfade** (la sessione riaperta suona identica fin dal primo campione) e svuota la cronologia undo.
-- I preset **non** contengono né sovrascrivono `driftSeed` e `bypass`: valgono a livello di progetto, come `bypass` e `osPhase` in Pentagrit.
-- Il determinismo cross-platform è garantito da un test con valori golden del profilo per un seed fisso.
+- `setStateInformation`: rifiuta versioni future (anche `profileVersion`), `migrateState()` come in Pentagrit, scarta un eventuale `driftSeed` delle build di sviluppo e svuota la cronologia undo. Uno stato letto prima del primo blocco suona identico dal primo campione (nessun fade); uno ripristinato durante la riproduzione fa il crossfade come un'automazione.
+- I preset **non** contengono né sovrascrivono `bypass`: vale a livello di progetto, come `bypass` e `osPhase` in Pentagrit.
+- Il determinismo cross-platform è garantito da un test con valori golden dei profili dei canali 1, 2 e 64.
 
 ### Parametri (`src/params/ParamIDs.h` + `DriftboxParameters.h/.cpp`; tutti `ParameterID{id, 1}`, ID immutabili)
 | ID | Tipo | Range | Default |
 |---|---|---|---|
-| `channels` | Choice | 2 / 4 / 8 / 16 | 4 |
+| `chanL` | Int (“Channel L”) | 1–64 | 1 |
+| `chanR` | Int (“Channel R”) | 1–64 | 2 |
 | `drift` | Float % | 0–100 | 50 |
 | `freqTol` | Float % | 0–100 | 50 |
 | `phaseTol` | Float % | 0–100 | 50 |
@@ -149,8 +163,8 @@ Ogni deviazione vale: **valore_profilo × Drift × Tolleranza × massimo**. Le d
 | `outGain` | Float dB | −24…+24, passo 0.1 | 0 |
 | `bypass` | Bool | — | off (`getBypassParameter()` override) |
 
-- `kNumParameters = 9`.
-- Testo digitato parsato con `withValueFromStringFunction` ("50 %", "-3 dB"), come in Pentagrit.
+- `kNumParameters = 10`. Il parametro `channels` è stato rimosso (revisione 2026-11-12).
+- Testo digitato parsato con `withValueFromStringFunction` ("50 %", "-3 dB", "12" per i canali), come in Pentagrit.
 - Struttura `ParamRefs` con `snapshot()` → `EngineSettings`.
 
 ---
@@ -196,8 +210,8 @@ driftbox/
 - Un solo tema scuro: grafite, un accento originale (non la palette di Pentagrit) e IBM Plex Sans/Mono. Il rapporto d'aspetto è fisso (base circa 720 × 440) e lo zoom va dal 75 al 200%, salvato nelle impostazioni.
 - Layout:
   - **Top bar**: logo, preset bar (◀ ▶, menu Save / Save As / Delete), undo/redo, Randomize, Bypass, ingranaggio.
-  - **Centro**: selettore segmentato dei canali 2 / 4 / 8 / 16 e **VoiceDisplay**, una barra per voce attiva che mostra la deviazione di guadagno e di tono. Viene ridisegnato solo quando cambia il profilo o un parametro (timer 30 Hz con dirty flag).
-  - **Riga di manopole**: Drift (grande), Freq, Phase, Gain, Saturation, Noise, Output.
+  - **Centro** *(rivisto)*: selettori dei canali L e R (1–64) e **VoiceDisplay**, che mostra la deviazione di guadagno e di tono dei due canali scelti. Viene ridisegnato solo quando cambia il profilo o un parametro (timer 30 Hz con dirty flag).
+  - **Riga di manopole** *(rivista: Freq, Phase, Gain, Saturation e Noise vanno in un pannello "Advanced" apribile)*: in vista Drift (grande) e Output, più L/R, Randomize e Bypass.
   - **Footer**: picco in uscita, CPU, versione.
 - Interazioni riprese da Pentagrit:
   - doppio clic per digitare un valore, Ctrl-clic per il reset, tooltip;
@@ -205,38 +219,38 @@ driftbox/
   - attachment JUCE con gesture.
 
 ## Preset e impostazioni (versioni ridotte)
-- **PresetManager** (solo message thread):
+- **PresetManager** (solo message thread; i preset salvano anche `chanL` e `chanR`):
   - factory read-only incorporati più file utente `.dbp` (XML + `stateVersion`) in `%APPDATA%/Driftbox/Presets`, con le cartelle equivalenti su macOS e Linux;
   - operazioni: Save, Save As, Delete, prev/next, indicatore "modificato";
   - niente A/B, categorie, import o export;
-  - escludono `driftSeed` e `bypass`.
-- **Preset di fabbrica**, con nomi originali e nessun riferimento a hardware: Init (Drift 0), Subtle Spread, Wide Pair (2 canali), Ensemble 16, Warm Stack, Gentle Grit, Noisy Desk.
+  - escludono `bypass`.
+- **Preset di fabbrica**, con nomi originali e nessun riferimento a hardware: Init (Drift 0), Subtle Spread, Wide Pair (canali lontani), Close Pair (canali vicini), Warm Stack, Gentle Grit, Noisy Desk.
 - **SettingsManager** (`Driftbox/settings.settings`, condiviso tra le istanze, tollerante a file mancanti o corrotti): zoom, tooltip e cartella dei preset utente.
 
 ## Test (Catch2, `ctest`)
 Test di accettazione richiesti:
-1. **Trasparenza**: Drift = 0 con tutti gli altri parametri al massimo, a 44.1/48/96/192 kHz e per 2/4/8/16 canali. Rumore e sinusoidi in ingresso; max |y − x| < 1e−5 (−100 dB).
+1. **Trasparenza**: Drift = 0 con tutti gli altri parametri al massimo, a 44.1/48/96/192 kHz e per varie coppie di canali. Rumore e sinusoidi in ingresso; max |y − x| < 1e−5 (−100 dB).
 2. **Niente NaN/Inf**:
    - fuzz casuale di parametri e block size (1..4096, anche dispari, block size 0);
    - ingresso con NaN, Inf e valori 1e30: l'uscita è sempre finita e il motore si riprende al blocco successivo;
    - denormal.
-3. **Cambio canali senza click**: sinusoide da 1 kHz a −6 dBFS e passaggi 2 → 16 → 4 → 8 → 2, anche durante una rampa. Il Δ massimo tra campioni consecutivi è ≤ 1.05 × il Δ a regime + 1e−4; nessun salto di livello RMS > 0.1 dB nelle finestre di 5 ms. Stesso controllo su Randomize.
+3. **Cambio di canale senza click** *(rivisto)*: sinusoide da 1 kHz a −6 dBFS, Drift 100 %, cambi di `chanL` e `chanR`, anche a ogni blocco come un'automazione veloce. Il Δ massimo tra campioni consecutivi è ≤ 1.05 × il Δ a regime + 1e−4; il salto RMS tra finestre da 5 ms è ≤ max(0.1 dB, 1.5 · |dL| · 5/250). Stesso controllo su `randomize()`.
 4. **Stato**:
-   - round trip di tutti i parametri, del seed e della dimensione UI;
-   - due istanze con lo stesso stato producono **un'uscita identica bit per bit** (anche il rumore è seminato dal seed);
-   - uno stato garbage viene ignorato; una versione futura viene rifiutata; uno stato senza versione vale come versione 1.
+   - round trip di tutti i parametri (compresi `chanL` e `chanR`) e della dimensione UI;
+   - due istanze con lo stesso stato (letto prima del primo blocco) producono **un'uscita identica bit per bit** (anche il rumore è seminato dal canale);
+   - uno stato garbage viene ignorato; una versione futura (`stateVersion` o `profileVersion`) viene rifiutata; uno stato senza versione vale come versione 1.
 5. **Niente clipping**: sinusoide e rumore a −1 dBFS con tutto al massimo e Output +24 dB danno picco ≤ 1.0. Un segnale a −6 dBFS con Output 0 non tocca il ceiling (|y| < 0.891).
 
 Test aggiuntivi in stile Pentagrit:
-- profilo deterministico con valori golden, range, seed diversi → profili diversi;
+- profili dei canali: determinismo, 64 canali tutti diversi, range, statistica, valori golden dei canali 1, 2 e 64, limiti del numero di canale;
 - voce: identità, guadagno entro ±1 dB, ritardo di fase entro τmax;
-- risposta sommata entro ±0.5 dB fino a 10 kHz al 100%;
+- anti-cancellazione: somma mono (L+R)/2 con ingresso identico, solo fase al 100 % e Drift 100 %, entro ±0.5 dB fino a 10 kHz su tutte le coppie (c, c+1) e su coppie casuali;
 - parametri: numero, ID, range, parsing del testo;
 - zero allocazioni in `processBlock` (override globale di `new`, tag `[allocation]`);
 - editor headless: creazione, distruzione, zoom;
-- undo di parametri e di Randomize;
+- undo di parametri e di Randomize (un solo passo "Randomize"; il costruttore non lascia passi);
 - preset e impostazioni con round trip e file corrotti;
-- performance: 16 voci a 48 kHz sotto ~2% di un core per istanza, con soglia larga in CI.
+- performance: due catene a 48 kHz, soglia larga in CI.
 
 ## CI/CD e release
 - **ci.yml** (come Pentagrit):
@@ -282,7 +296,7 @@ Regole per ogni task:
 | T1 | DriftProfile + Prng | `dsp/Prng.h`, `dsp/DriftProfile.*`, `ProfileTests` | Valori golden, range, determinismo |
 | T2 | DriftChannel + Biquad | `dsp/Biquad.h`, `dsp/DriftChannel.*`, `ChannelTests` | Identità a 0, limiti di guadagno e fase, niente NaN |
 | T3 | DriftEngine | `dsp/DriftEngine.*`, `Meters.h`, `EngineTests`, i 5 test in `DriftboxTests.cpp` | Trasparenza, NaN/Inf, cambio canali, Randomize senza click, niente clipping |
-| T4 | Integrazione nel processor | `PluginProcessor.*` (seed, randomize, stato, UndoRecorder + SeedChangeAction), `StateTests`, `AllocationTests`, `UndoTests`, `PerfTests` | Round trip bit-identico; zero allocazioni; pluginval 10 in locale |
+| T4 | Integrazione nel processor | `PluginProcessor.*` (randomize, stato, UndoRecorder; il seed e `SeedChangeAction` sono stati rimossi dalla revisione 2026-11-12), `StateTests`, `AllocationTests`, `UndoTests`, `PerfTests` | Round trip bit-identico; zero allocazioni; pluginval 10 in locale |
 | T5 | CI/CD | `.github/*`, `scripts/ci/*` adattati, `scripts/dev/*` | CI verde sui 3 OS (label `ci:macos`), clang-tidy e asan verdi |
 | T6 | Mockup + brand (skill) | `docs/design/*`, `resources/brand/*`; Artifact | **Tua approvazione** del mockup |
 | T7 | UI JUCE | `PluginEditor.*`, `ui/*`, font, `EditorTests` | Editor headless verde; screenshot da te in un DAW |
@@ -300,13 +314,13 @@ Revisione del codice per ogni PR:
 - nessun riferimento o asset di plugin commerciali.
 
 ## Rischi e soluzioni
-1. **Somma delle voci con cancellazioni di fase**: ritardi sempre positivi e limitati (τmax 5 µs); test sulla risposta sommata entro ±0.5 dB fino a 10 kHz.
-2. **Determinismo cross-platform del seed**: PRNG proprio con mappatura esplicita, `profileVersion`, test con valori golden.
-3. **Click al cambio canali o al Randomize**: rampe con somma costante, reset delle voci solo a peso 0, crossfade del profilo; test sul Δ campione per campione.
+1. **Somma mono L+R con cancellazioni di fase**: ritardi sempre positivi e limitati (τmax 5 µs); test sulla risposta della somma entro ±0.5 dB fino a 10 kHz.
+2. **Determinismo cross-platform dei profili**: PRNG proprio con mappatura esplicita, passaggio di hash sul numero di canale, `profileVersion`, test con valori golden.
+3. **Click al cambio di canale o al Randomize**: crossfade delle tolleranze dal valore corrente, seed del rumore cambiato senza reset dei filtri; test sul Δ campione per campione.
 4. **Ceiling e trasparenza**: il knee parte da −1 dBFS, quindi sotto quella soglia il segnale resta invariato; è documentato che con Output alto il ceiling lavora.
-5. **CPU con molte istanze**: voci a peso 0 saltate, coefficienti a control rate, `fastTanh`, saturazione saltata a k = 1; il PerfTest fa da guardia.
+5. **CPU con molte istanze**: solo due catene, coefficienti a control rate, `fastTanh`, saturazione saltata a k = 1; il PerfTest fa da guardia.
 6. **Percorsi lunghi su Windows** (repo nella cartella Desktop): build in `build/<preset>` e cache CPM in `C:\dev\.cpm`; worktree degli agenti in `C:\dev\db-tN`.
-7. **pluginval 10**: fuzz su `channels` e bypass, block size e sample rate variabili, già coperti dai test.
+7. **pluginval 10**: fuzz su `chanL`, `chanR` e bypass, block size e sample rate variabili, già coperti dai test.
 8. **AU, Gatekeeper e firma**: firma ad-hoc e pkg non firmato come in Pentagrit; `docs/MACOS_SIGNING.md` copiato e adattato.
 9. **AGPL**: il repo pubblico soddisfa l'obbligo di rendere disponibile il sorgente.
 10. **Marchio "Driftbox"**: da verificare prima della release stabile (da te).

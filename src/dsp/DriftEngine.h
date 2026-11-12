@@ -6,26 +6,24 @@
 #include "dsp/DspTypes.h"
 #include "dsp/Meters.h"
 #include <array>
-#include <cstdint>
 #include <juce_audio_basics/juce_audio_basics.h>
 
 namespace driftbox
 {
-// Motore multi-voce di Driftbox.
+// Motore di Driftbox: una catena DriftChannel per lato, come una striscia di un mixer virtuale.
 //
 // Flusso per blocco (stereo o mono, latenza 0):
-//   per lato s: uscita_s = somma su v con (v & 1) == s di peso_v x voce_v(ingresso_s)
+//   per lato s (0 = L, 1 = R): uscita_s = catena_s(ingresso_s)
 //   -> Output Gain (smussato) -> limitatore di sicurezza softCeiling() -> sanitizzazione NaN/Inf
 //   -> crossfade di bypass verso l'ingresso.
-// In mono il lato 1 non esiste: le voci dispari sono saltate e quelle pari pesano 1/(N/2).
+// In mono si elabora solo il lato 0 (L).
 //
-// Pesi delle voci: target 2/N per v < N, 0 altrimenti. Rampa lineare di kVoiceRampSeconds sullo stesso
-// orologio per tutte le voci, quindi la somma dei pesi di un lato resta 1 anche durante la rampa (niente
-// click al cambio del numero di canali). Una voce con peso 0 non viene elaborata; quando riparte da 0 viene
-// prima resettata.
-//
-// Tolleranze: il profilo corrente è DriftProfile::generate(seed). Un nuovo seed con crossfade == true passa
-// al nuovo profilo interpolando (DriftProfile::lerp) in kProfileFadeSeconds.
+// Tolleranze: ogni lato ha un numero di canale (1..kNumConsoleChannels) a cui corrisponde un profilo fisso,
+// channelProfile(canale). Quando il canale di un lato cambia, le tolleranze di quel lato passano dal valore
+// effettivo corrente (anche a fade in corso) al profilo del nuovo canale con un crossfade lineare di
+// kProfileFadeSeconds (lerp()); il seed del rumore passa subito al nuovo, senza reset dei filtri. I due lati
+// hanno fade indipendenti. Al primo blocco dopo prepare()/reset() non c'è nessun fade: i valori sono i
+// target.
 //
 // Contratto: prepare() può allocare (solo da prepareToPlay); tutto il resto è noexcept e senza allocazioni.
 // process() accetta blocchi di qualunque lunghezza (anche 0 o > maxBlockSize: chunking interno).
@@ -33,29 +31,28 @@ class DriftEngine
 {
 public:
     static constexpr int kControlInterval = 32; // campioni tra due aggiornamenti dei coefficienti
-    static constexpr double kVoiceRampSeconds = 0.050;
     static constexpr double kProfileFadeSeconds = 0.250;
     static constexpr double kBypassFadeSeconds = 0.020;
     static constexpr double kGainSmoothSeconds = 0.020;  // Output Gain
     static constexpr double kParamSmoothSeconds = 0.050; // drift, tolleranze, saturazione, rumore
+
+    DriftEngine() noexcept { sides_[1].channel = 2; } // default L = 1, R = 2
 
     void prepare(double sampleRate, int maxBlockSize, int numChannels);
     void reset() noexcept;
 
     void setSettings(const EngineSettings& settings) noexcept;
 
-    // Imposta il seed delle tolleranze. Nessun effetto se è già quello corrente. Con crossfade == false
-    // (stato ripristinato, prima del primo blocco) il nuovo profilo vale subito, così una sessione riaperta
-    // suona identica fin dal primo campione.
-    void setSeed(std::uint64_t seed, bool crossfade) noexcept;
-    std::uint64_t getSeed() const noexcept { return seed_; }
-
     void process(juce::AudioBuffer<float>& buffer) noexcept;
 
     MeterState& meters() noexcept { return meters_; }
 
-    // Peso corrente della voce v (per i test e per la UI).
-    float voiceWeight(int v) const noexcept;
+    // Canale TARGET del lato (0 = L, 1 = R) applicato all'ultimo sotto-blocco elaborato (prima del primo
+    // blocco vale il default 1 / 2). In mono il lato 1 non viene elaborato e resta fermo. Per i test e la UI.
+    int channelOf(int side) const noexcept;
+
+    // Vero finché il crossfade delle tolleranze del lato è in corso. Per i test e la UI.
+    bool isFading(int side) const noexcept;
 
 private:
     // Valori smussati dei parametri (aggiornati una volta per sotto-blocco).
@@ -64,37 +61,34 @@ private:
         float drift = 0.0f, freqTol = 0.0f, phaseTol = 0.0f, gainTol = 0.0f, saturation = 0.0f, noise = 0.0f;
     };
 
+    // Catena di un lato con le sue tolleranze: `cur` è il valore effettivo del sotto-blocco corrente,
+    // `from`/`to` servono solo durante il crossfade.
+    struct Side
+    {
+        DriftChannel chain;
+        int channel = 1;
+        VoiceTolerance cur, from, to;
+        bool fading = false;
+        float fadePos = 0.0f; // 0..1
+    };
+
     // Un sotto-blocco di n <= kControlInterval campioni sui canali `numCh` (puntatori in `ch`).
     void processChunk(float* const* ch, int numCh, int n) noexcept;
-    // Aggiorna profilo, pesi e smoothing per un sotto-blocco di n campioni; riempie w0/w1 per voce.
-    void advanceControl(int n) noexcept;
-    // Imposta i seed del profilo `profile` sui generatori di rumore delle voci (senza reset dei filtri).
-    void applyNoiseSeeds(const DriftProfile& profile) noexcept;
-    void computeTargetWeights() noexcept;
+    // Aggiorna smoothing e tolleranze dei lati attivi per un sotto-blocco di n campioni.
+    void advanceControl(int numCh, int n) noexcept;
 
     double sampleRate_ = 48000.0;
     int maxBlock_ = 0, numChannels_ = 2;
     EngineSettings settings_;
-    std::uint64_t seed_ = 0;
-    // profile_ è il profilo effettivo del sotto-blocco corrente; from/to servono solo durante il crossfade.
-    DriftProfile profile_, fromProfile_, toProfile_;
-    bool fading_ = false;
-    float fadePos_ = 0.0f; // 0..1
-    std::array<DriftChannel, kMaxVoices> voices_;
-
-    // Pesi: correnti, di partenza della rampa e target; rampPos_ in 0..1 (1 = rampa finita).
-    std::array<float, kMaxVoices> weights_{}, startWeights_{}, targetWeights_{};
-    std::array<float, kMaxVoices> w0_{}, w1_{}; // pesi a inizio e fine del sotto-blocco corrente
-    float rampPos_ = 1.0f;
-    int targetVoices_ = 0; // N del target corrente (0 = nessuno ancora)
+    std::array<Side, 2> sides_;
 
     SmoothedParams smooth_;
     float outGain_ = 1.0f;
     float wetMix_ = 1.0f; // 1 = wet, 0 = dry (bypass)
 
     bool fresh_ = true; // nessun blocco elaborato dopo prepare()/reset(): i valori partono dai target
-    // Le voci non sono state elaborate (bypass stabile): vanno resettate alla ripresa.
-    bool voicesIdle_ = false;
+    // Le catene non sono state elaborate (bypass stabile): vanno resettate alla ripresa.
+    bool chainsIdle_ = false;
 
     // Buffer di lavoro a dimensione fissa (nessuna allocazione in process()).
     std::array<std::array<float, kControlInterval>, 2> in_{}, acc_{};

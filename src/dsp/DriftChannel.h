@@ -8,7 +8,7 @@
 
 namespace driftbox
 {
-// Quantità effettive di deviazione per una voce, in 0..1, GIÀ moltiplicate per drift01 dal motore:
+// Quantità effettive di deviazione per una catena, in 0..1, GIÀ moltiplicate per drift01 dal motore:
 // freq = drift x freqTol, phase = drift x phaseTol, gain = drift x gainTol, saturation = drift x saturation,
 // noise = drift x noise. Con tutti i campi a 0 la voce è l'identità esatta.
 struct VoiceAmounts
@@ -16,7 +16,7 @@ struct VoiceAmounts
     float freq = 0.0f, phase = 0.0f, gain = 0.0f, saturation = 0.0f, noise = 0.0f;
 };
 
-// Una voce interna: catena DSP indipendente e molto leggera.
+// Una catena DSP per lato (canale del mixer virtuale): catena DSP indipendente e molto leggera.
 //   ingresso -> low shelf -> campana -> high shelf -> allpass del primo ordine (ritardo frazionario >= 0)
 //            -> guadagno -> miscela continua verso tanh(k x) / k -> + rumore
 // Tutte le deviazioni vengono da VoiceTolerance (profilo) x VoiceAmounts x limiti (vedi DriftProfile.h).
@@ -37,8 +37,8 @@ public:
 
     void setNoiseSeed(std::uint32_t seed) noexcept;
 
-    // Ricalcola i coefficienti. noiseScale (>= 1) è il fattore sqrt(N/2) con cui il motore compensa la media
-    // su N/2 voci, così il livello di rumore in uscita non dipende dal numero di voci.
+    // Ricalcola i coefficienti. noiseScale moltiplica l'ampiezza del rumore (il motore passa 1: c'è una sola
+    // catena per lato, quindi nessuna compensazione).
     void update(const VoiceTolerance& tol, const VoiceAmounts& amounts, float noiseScale) noexcept;
 
     // Elabora n campioni di `in` e li ACCUMULA in `acc`: acc[i] += w(i) * y[i], dove w va linearmente da w0

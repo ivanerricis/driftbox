@@ -168,34 +168,30 @@ TEST_CASE("Biquad coefficients are finite and stable at every sample rate", "[ch
 TEST_CASE("DriftChannel is bit-exact transparent with all amounts at zero", "[channel]")
 {
     const VoiceAmounts zero{};
-    for (int seedIdx = 0; seedIdx < 3; ++seedIdx)
+    for (int channel : {1, 2, 17, 33, 64})
     {
-        const auto profile = DriftProfile::generate(0xABCDEF01ull * static_cast<std::uint64_t>(seedIdx + 1));
-        for (int v = 0; v < kMaxVoices; v += 5)
+        const auto profile = channelProfile(channel);
+        for (double sr : {44100.0, 96000.0})
         {
-            const auto vi = static_cast<size_t>(v);
-            for (double sr : {44100.0, 96000.0})
+            auto ch = makeChannel(sr, profile.noiseSeed);
+            ch.update(profile.tol, zero, 3.7f);
+
+            const std::vector<Signal> inputs = {noise(4096, 77u + static_cast<unsigned>(channel)),
+                                                sine(4096, 997.0, sr, 0.9f), sine(4096, 60.0, sr, 1.0f)};
+            for (const auto& in : inputs)
             {
-                auto ch = makeChannel(sr, profile.noiseSeeds[vi]);
-                ch.update(profile.voices[vi], zero, 3.7f);
-
-                const std::vector<Signal> inputs = {noise(4096, 77u + static_cast<unsigned>(v)),
-                                                    sine(4096, 997.0, sr, 0.9f), sine(4096, 60.0, sr, 1.0f)};
-                for (const auto& in : inputs)
+                ch.reset();
+                Signal out(in.size());
+                for (size_t i = 0; i < in.size(); ++i)
                 {
-                    ch.reset();
-                    Signal out(in.size());
-                    for (size_t i = 0; i < in.size(); ++i)
-                    {
-                        out[i] = ch.processSample(in[i]);
-                    }
-                    CHECK(sameBits(in, out));
-
-                    ch.reset();
-                    Signal acc(in.size(), 0.0f);
-                    ch.processAdd(in.data(), acc.data(), static_cast<int>(in.size()), 1.0f, 1.0f);
-                    CHECK(sameBits(in, acc));
+                    out[i] = ch.processSample(in[i]);
                 }
+                CHECK(sameBits(in, out));
+
+                ch.reset();
+                Signal acc(in.size(), 0.0f);
+                ch.processAdd(in.data(), acc.data(), static_cast<int>(in.size()), 1.0f, 1.0f);
+                CHECK(sameBits(in, acc));
             }
         }
     }

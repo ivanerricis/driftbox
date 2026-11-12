@@ -16,6 +16,9 @@ float nextTriangular(SplitMix64& rng) noexcept
     return (a + b) * 0.5f;
 }
 
+// Costante del "mixer" virtuale (ASCII "DRIFTBXO"), parte del formato congelato v1.
+constexpr std::uint64_t kConsoleSeed = 0x445249465442584Full;
+
 // Interpolazione che garantisce i valori esatti agli estremi: t = 0 -> a, t >= 1 -> b.
 float mix(float a, float b, float t) noexcept
 {
@@ -26,16 +29,22 @@ float mix(float a, float b, float t) noexcept
 // FORMATO CONGELATO, versione 1. Non modificare mai questo algoritmo: le sessioni salvate devono suonare
 // identiche. Per cambiare la generazione si aggiunge una nuova versione.
 //
-//   SplitMix64 rng(seed)
-//   Per v = 0..kMaxVoices-1, nell'ordine, si estraggono:
+//   kConsoleSeed = 0x445249465442584F
+//   Seed del canale c (1..kNumConsoleChannels):
+//     SplitMix64 h(kConsoleSeed + c);  s = h.next();
+//   SplitMix64 rng(s); si estraggono, nell'ordine:
 //     lowShelfDb, lowShelfOct, highShelfDb, highShelfOct, bellDb   triangolari in [-1, 1)
 //     bellPos01, delay01                                           uniformi in [0, 1)
 //     gainDb, driveSpread, noiseLevel                              triangolari in [-1, 1)
-//     noiseSeeds[v] = uint32(rng.next() >> 32) | 1                 (mai 0)
+//     noiseSeed = uint32(rng.next() >> 32) | 1                     (mai 0)
 //   Triangolare = (nextBipolar() + nextBipolar()) * 0.5f (due estrazioni, in quest'ordine).
-//   Le voci sono sempre tutte 16, indipendentemente dal numero di voci attive: cambiare il numero di voci non
-//   cambia le tolleranze delle voci già esistenti.
-DriftProfile DriftProfile::generate(std::uint64_t seed, int version) noexcept
+//
+// Perché il passaggio di hash: SplitMix64 avanza lo stato di una costante fissa (gamma) a ogni estrazione,
+// quindi due stati che differiscono di un multiplo di gamma producono lo stesso stream sfasato: sequenze
+// correlate. Usare direttamente seed consecutivi (kConsoleSeed + c) non dà alcuna garanzia di
+// indipendenza tra canali vicini, mentre il primo output di h è una funzione mescolata dell'indice e porta
+// ogni canale in uno stato di partenza scorrelato dagli altri.
+ChannelProfile channelProfile(int channel, int version) noexcept
 {
     // Versioni sconosciute: si usa la più recente. Oggi esiste solo la 1.
     if (version <= 0 || version > kProfileVersion)
@@ -43,50 +52,44 @@ DriftProfile DriftProfile::generate(std::uint64_t seed, int version) noexcept
         version = kProfileVersion;
     }
 
-    DriftProfile p;
-    p.seed = seed;
+    channel = channel < 1 ? 1 : (channel > kNumConsoleChannels ? kNumConsoleChannels : channel);
 
-    SplitMix64 rng(seed);
-    for (int v = 0; v < kMaxVoices; ++v)
-    {
-        auto& t = p.voices[static_cast<std::size_t>(v)];
-        t.lowShelfDb = nextTriangular(rng);
-        t.lowShelfOct = nextTriangular(rng);
-        t.highShelfDb = nextTriangular(rng);
-        t.highShelfOct = nextTriangular(rng);
-        t.bellDb = nextTriangular(rng);
-        t.bellPos01 = rng.nextUnipolar();
-        t.delay01 = rng.nextUnipolar();
-        t.gainDb = nextTriangular(rng);
-        t.driveSpread = nextTriangular(rng);
-        t.noiseLevel = nextTriangular(rng);
-        p.noiseSeeds[static_cast<std::size_t>(v)] = static_cast<std::uint32_t>(rng.next() >> 32) | 1u;
-    }
+    SplitMix64 h(kConsoleSeed + static_cast<std::uint64_t>(channel));
+    const std::uint64_t s = h.next();
+    SplitMix64 rng(s);
+
+    ChannelProfile p;
+    auto& t = p.tol;
+    t.lowShelfDb = nextTriangular(rng);
+    t.lowShelfOct = nextTriangular(rng);
+    t.highShelfDb = nextTriangular(rng);
+    t.highShelfOct = nextTriangular(rng);
+    t.bellDb = nextTriangular(rng);
+    t.bellPos01 = rng.nextUnipolar();
+    t.delay01 = rng.nextUnipolar();
+    t.gainDb = nextTriangular(rng);
+    t.driveSpread = nextTriangular(rng);
+    t.noiseLevel = nextTriangular(rng);
+    p.noiseSeed = static_cast<std::uint32_t>(rng.next() >> 32) | 1u;
     return p;
 }
 
-DriftProfile DriftProfile::lerp(const DriftProfile& a, const DriftProfile& b, float t) noexcept
+VoiceTolerance lerp(const VoiceTolerance& a, const VoiceTolerance& b, float t) noexcept
 {
     // Il confronto scritto così scarta anche i NaN (t diventa 0).
     t = t > 0.0f ? (t < 1.0f ? t : 1.0f) : 0.0f;
 
-    DriftProfile p = b; // seed e noiseSeeds da b
-    for (std::size_t v = 0; v < p.voices.size(); ++v)
-    {
-        const auto& x = a.voices[v];
-        const auto& y = b.voices[v];
-        auto& r = p.voices[v];
-        r.lowShelfDb = mix(x.lowShelfDb, y.lowShelfDb, t);
-        r.lowShelfOct = mix(x.lowShelfOct, y.lowShelfOct, t);
-        r.highShelfDb = mix(x.highShelfDb, y.highShelfDb, t);
-        r.highShelfOct = mix(x.highShelfOct, y.highShelfOct, t);
-        r.bellDb = mix(x.bellDb, y.bellDb, t);
-        r.bellPos01 = mix(x.bellPos01, y.bellPos01, t);
-        r.delay01 = mix(x.delay01, y.delay01, t);
-        r.gainDb = mix(x.gainDb, y.gainDb, t);
-        r.driveSpread = mix(x.driveSpread, y.driveSpread, t);
-        r.noiseLevel = mix(x.noiseLevel, y.noiseLevel, t);
-    }
-    return p;
+    VoiceTolerance r;
+    r.lowShelfDb = mix(a.lowShelfDb, b.lowShelfDb, t);
+    r.lowShelfOct = mix(a.lowShelfOct, b.lowShelfOct, t);
+    r.highShelfDb = mix(a.highShelfDb, b.highShelfDb, t);
+    r.highShelfOct = mix(a.highShelfOct, b.highShelfOct, t);
+    r.bellDb = mix(a.bellDb, b.bellDb, t);
+    r.bellPos01 = mix(a.bellPos01, b.bellPos01, t);
+    r.delay01 = mix(a.delay01, b.delay01, t);
+    r.gainDb = mix(a.gainDb, b.gainDb, t);
+    r.driveSpread = mix(a.driveSpread, b.driveSpread, t);
+    r.noiseLevel = mix(a.noiseLevel, b.noiseLevel, t);
+    return r;
 }
 } // namespace driftbox

@@ -4,6 +4,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <set>
+#include <utility>
 
 using namespace driftbox;
 using Catch::Approx;
@@ -34,7 +35,7 @@ TEST_CASE("Parameter layout: count, unique IDs and version", "[params]")
     }
     CHECK(ids.size() == static_cast<size_t>(kNumParameters));
 
-    for (const char* id : {pid::channels, pid::drift, pid::freqTol, pid::phaseTol, pid::gainTol,
+    for (const char* id : {pid::chanL, pid::chanR, pid::drift, pid::freqTol, pid::phaseTol, pid::gainTol,
                            pid::saturation, pid::noise, pid::outGain, pid::bypass})
     {
         CHECK(ids.count(id) == 1);
@@ -46,8 +47,6 @@ TEST_CASE("Parameter ranges and defaults", "[params]")
     DriftboxAudioProcessor p;
     auto& apvts = p.getAPVTS();
 
-    CHECK(apvts.getRawParameterValue(pid::channels)->load() ==
-          Approx(static_cast<float>(kDefaultChannelIndex)));
     CHECK(apvts.getRawParameterValue(pid::drift)->load() == Approx(0.5f));
     CHECK(apvts.getRawParameterValue(pid::noise)->load() == Approx(0.0f));
     // Margine assoluto: il default 0 dB passa da un valore normalizzato e su macOS non torna esattamente a 0.
@@ -67,10 +66,21 @@ TEST_CASE("Parameter ranges and defaults", "[params]")
         CHECK(r.isAutomatable());
     }
 
-    auto* channels = dynamic_cast<juce::AudioParameterChoice*>(&param(p, pid::channels));
-    REQUIRE(channels != nullptr);
-    CHECK(channels->choices == juce::StringArray{"2", "4", "8", "16"});
-    CHECK(channels->isAutomatable());
+    // I valori vivi di chanL/chanR sono una coppia casuale (nuova istanza): si controlla il default.
+    for (const auto& [id, def] : {std::pair{pid::chanL, 1}, std::pair{pid::chanR, 2}})
+    {
+        auto* ch = dynamic_cast<juce::AudioParameterInt*>(&param(p, id));
+        REQUIRE(ch != nullptr);
+        CHECK(ch->getRange().getStart() == 1);
+        CHECK(ch->getRange().getEnd() == 64);
+        CHECK(ch->getNormalisableRange().interval == Approx(1.0f));
+        CHECK(juce::roundToInt(ch->convertFrom0to1(
+                  static_cast<juce::RangedAudioParameter&>(*ch).getDefaultValue())) == def);
+        CHECK(ch->isAutomatable());
+        CHECK(ch->getParameterID() == id);
+    }
+    CHECK(param(p, pid::chanL).getName(64) == "Channel L");
+    CHECK(param(p, pid::chanR).getName(64) == "Channel R");
 }
 
 TEST_CASE("Snapshot maps parameters to engine settings", "[params]")
@@ -85,13 +95,15 @@ TEST_CASE("Snapshot maps parameters to engine settings", "[params]")
         r.setValueNotifyingHost(r.convertTo0to1(value));
     };
 
-    set(pid::channels, 3.0f); // indice 3 -> 16 voci
+    set(pid::chanL, 12.0f);
+    set(pid::chanR, 64.0f);
     set(pid::drift, 0.25f);
     set(pid::outGain, -6.0f);
     set(pid::bypass, 1.0f);
 
     const auto s = refs.snapshot();
-    CHECK(s.numVoices == 16);
+    CHECK(s.channelL == 12);
+    CHECK(s.channelR == 64);
     CHECK(s.drift01 == Approx(0.25f));
     CHECK(s.outGainDb == Approx(-6.0f).margin(0.05f));
     CHECK(s.bypass);
@@ -109,4 +121,13 @@ TEST_CASE("Typed text round-trips through the parameters", "[params]")
     auto& out = param(p, pid::outGain);
     CHECK(out.convertFrom0to1(out.getValueForText("-3.5 dB")) == Approx(-3.5f).margin(0.05f));
     CHECK(out.convertFrom0to1(out.getValueForText("12")) == Approx(12.0f).margin(0.05f));
+
+    for (const char* id : {pid::chanL, pid::chanR})
+    {
+        auto& ch = param(p, id);
+        CHECK(juce::roundToInt(ch.convertFrom0to1(ch.getValueForText("12"))) == 12);
+        CHECK(juce::roundToInt(ch.convertFrom0to1(ch.getValueForText("64"))) == 64);
+        CHECK(juce::roundToInt(ch.convertFrom0to1(ch.getValueForText("1"))) == 1);
+        CHECK(ch.getText(ch.convertTo0to1(37.0f), 32) == "37");
+    }
 }

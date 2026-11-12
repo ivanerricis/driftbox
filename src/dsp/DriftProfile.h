@@ -7,11 +7,11 @@
 
 namespace driftbox
 {
-// Versione dell'algoritmo che genera il profilo dal seed. Salvata nello stato: se un giorno la generazione
-// cambia, si aggiunge una nuova versione e generate() continua a riprodurre quelle vecchie.
+// Versione dell'algoritmo che genera il profilo di un canale. Salvata nello stato: se un giorno la
+// generazione cambia, si aggiunge una nuova versione e channelProfile() continua a riprodurre quelle vecchie.
 inline constexpr int kProfileVersion = 1;
 
-// Limiti delle deviazioni a Drift = 100 % e tolleranza = 100 %. La deviazione effettiva di una voce vale
+// Limiti delle deviazioni a Drift = 100 % e tolleranza = 100 %. La deviazione effettiva di un canale vale
 // valore_del_profilo x drift01 x tolleranza01 x limite.
 namespace limits
 {
@@ -29,11 +29,11 @@ inline constexpr float kMaxGainDb = 1.0f;  // guadagno, +-dB
 inline constexpr float kMaxDrive = 1.0f;   // k = 1 + kMaxDrive x sat x drift x (1 + kDriveSpread x spread)
 inline constexpr float kDriveSpread = 0.15f;
 inline constexpr float kNoiseMaxDbfs = -84.0f; // RMS del rumore in uscita con noise = drift = 100 %
-inline constexpr float kNoiseSpreadDb = 1.5f;  // differenza di livello del rumore tra le voci, +-dB
+inline constexpr float kNoiseSpreadDb = 1.5f;  // differenza di livello del rumore tra i canali, +-dB
 inline constexpr float kNoiseLowpassHz = 12000.0f;
 } // namespace limits
 
-// Tolleranze normalizzate di una voce (i componenti "fuori tolleranza" di un singolo canale).
+// Tolleranze normalizzate di un canale (i componenti "fuori tolleranza" di una striscia del mixer).
 // Campi bipolari in [-1, 1], campi *01 in [0, 1].
 struct VoiceTolerance
 {
@@ -49,19 +49,19 @@ struct VoiceTolerance
     float noiseLevel = 0.0f;   // x kNoiseSpreadDb
 };
 
-// Profilo completo delle tolleranze: deterministico, derivato solo da (seed, versione).
-struct DriftProfile
+// Tolleranze fisse di un canale del mixer virtuale, più il seed del suo generatore di rumore (mai 0).
+struct ChannelProfile
 {
-    std::uint64_t seed = 0;
-    std::array<VoiceTolerance, kMaxVoices> voices{};
-    // Seed del generatore di rumore di ogni voce (derivati dal seed principale, mai 0).
-    std::array<std::uint32_t, kMaxVoices> noiseSeeds{};
-
-    // Pura e senza allocazioni: può essere chiamata anche dall'audio thread.
-    static DriftProfile generate(std::uint64_t seed, int version = kProfileVersion) noexcept;
-
-    // Interpolazione lineare campo per campo (t in [0, 1]) usata per il crossfade dopo un Randomize.
-    // seed e noiseSeeds vengono presi da b.
-    static DriftProfile lerp(const DriftProfile& a, const DriftProfile& b, float t) noexcept;
+    VoiceTolerance tol;
+    std::uint32_t noiseSeed = 1u;
 };
+
+// Tolleranze fisse del canale `channel` (limitato a 1..kNumConsoleChannels) del "mixer" virtuale: a ogni
+// numero corrisponde sempre lo stesso profilo, su ogni piattaforma. Pura e senza allocazioni: può essere
+// chiamata anche dall'audio thread. Versioni sconosciute usano kProfileVersion.
+ChannelProfile channelProfile(int channel, int version = kProfileVersion) noexcept;
+
+// Interpolazione lineare campo per campo, usata per il crossfade al cambio di canale. t è limitato a [0, 1]
+// (NaN -> 0); a t = 0 il risultato è esattamente a e a t = 1 esattamente b.
+VoiceTolerance lerp(const VoiceTolerance& a, const VoiceTolerance& b, float t) noexcept;
 } // namespace driftbox

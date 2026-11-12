@@ -8,7 +8,7 @@
 
 namespace driftbox
 {
-inline constexpr int kNumParameters = 9;
+inline constexpr int kNumParameters = 10;
 
 // Layout completo dei parametri. Le percentuali sono memorizzate in 0..1 e mostrate come 0..100 %.
 juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
@@ -18,7 +18,7 @@ struct ParamRefs
 {
     explicit ParamRefs(juce::AudioProcessorValueTreeState& apvts);
 
-    std::atomic<float>*channels, *drift, *freqTol, *phaseTol, *gainTol, *saturation, *noise, *outGain,
+    std::atomic<float>*chanL, *chanR, *drift, *freqTol, *phaseTol, *gainTol, *saturation, *noise, *outGain,
         *bypass;
 
     // Copia coerente dei parametri per il blocco corrente (noexcept, senza allocazioni).

@@ -6,11 +6,14 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <complex>
 #include <cstdint>
 #include <cstdio>
+#include <random>
+#include <utility>
 #include <vector>
 
 using namespace driftbox;
@@ -21,11 +24,12 @@ namespace
 {
 constexpr double kSr = 48000.0;
 
-EngineSettings makeSettings(int voices, float drift, float tol = 1.0f, float sat = 0.0f, float noise = 0.0f,
-                            float gainDb = 0.0f, bool bypass = false)
+EngineSettings makeSettings(int chanL, int chanR, float drift, float tol = 1.0f, float sat = 0.0f,
+                            float noise = 0.0f, float gainDb = 0.0f, bool bypass = false)
 {
     EngineSettings s;
-    s.numVoices = voices;
+    s.channelL = chanL;
+    s.channelR = chanR;
     s.drift01 = drift;
     s.freqTol01 = s.phaseTol01 = s.gainTol01 = tol;
     s.saturation01 = sat;
@@ -54,10 +58,9 @@ void runStereo(DriftEngine& e, Signal& l, Signal& r, int block)
     runStereo(e, l, r, 0, l.size(), block);
 }
 
-void prepareEngine(DriftEngine& e, int channels = 2, double sr = kSr, std::uint64_t seed = 12345)
+void prepareEngine(DriftEngine& e, int channels = 2, double sr = kSr)
 {
     e.prepare(sr, 512, channels);
-    e.setSeed(seed, false);
 }
 
 double maxDelta(const Signal& s, size_t from, size_t to)
@@ -75,32 +78,6 @@ bool allFinite(const Signal& s)
     return std::all_of(s.begin(), s.end(), [](float v) { return std::isfinite(v); });
 }
 
-// Somma dei pesi per lato (stereo: v & 1; mono: solo il lato 0).
-double sideSum(const DriftEngine& e, int side)
-{
-    double sum = 0.0;
-    for (int v = side; v < kMaxVoices; v += 2)
-    {
-        sum += static_cast<double>(e.voiceWeight(v));
-    }
-    return sum;
-}
-
-void checkWeightSums(const DriftEngine& e)
-{
-    REQUIRE(std::fabs(sideSum(e, 0) - 1.0) < 1.0e-6);
-    REQUIRE(std::fabs(sideSum(e, 1) - 1.0) < 1.0e-6);
-}
-
-void checkFinalWeights(const DriftEngine& e, int n)
-{
-    for (int v = 0; v < kMaxVoices; ++v)
-    {
-        const float expected = v < n ? 2.0f / static_cast<float>(n) : 0.0f;
-        REQUIRE(e.voiceWeight(v) == expected);
-    }
-}
-
 // Risposta in frequenza (DFT in double) a una frequenza qualsiasi.
 double responseDb(const Signal& ir, double sampleRate, double hz)
 {
@@ -112,6 +89,21 @@ double responseDb(const Signal& ir, double sampleRate, double hz)
     }
     return 20.0 * std::log10(std::abs(acc));
 }
+
+// Numero di sotto-blocchi da 32 campioni dopo i quali il fade del lato finisce (con un massimo di sicurezza).
+int blocksUntilFadeEnds(DriftEngine& e, int side, int maxBlocks = 1000)
+{
+    Signal l(DriftEngine::kControlInterval, 0.25f), r = l;
+    for (int b = 1; b <= maxBlocks; ++b)
+    {
+        runStereo(e, l, r, DriftEngine::kControlInterval);
+        if (!e.isFading(side))
+        {
+            return b;
+        }
+    }
+    return -1;
+}
 } // namespace
 
 TEST_CASE("Engine output gain: values within half a 0.1 dB step of 0 are exact unity", "[engine]")
@@ -121,7 +113,7 @@ TEST_CASE("Engine output gain: values within half a 0.1 dB step of 0 are exact u
     {
         DriftEngine e;
         prepareEngine(e);
-        e.setSettings(makeSettings(2, 0.0f, 1.0f, 1.0f, 1.0f, gainDb));
+        e.setSettings(makeSettings(3, 40, 0.0f, 1.0f, 1.0f, 1.0f, gainDb));
         auto l = sine(4096, 1000.0, kSr, 0.5f);
         auto r = noise(4096, 7, 0.5f);
         const auto l0 = l, r0 = r;
@@ -131,65 +123,11 @@ TEST_CASE("Engine output gain: values within half a 0.1 dB step of 0 are exact u
     }
 }
 
-TEST_CASE("Engine weights: per-side sum is 1 during every N change, final weights are exact", "[engine]")
-{
-    DriftEngine e;
-    prepareEngine(e);
-    e.setSettings(makeSettings(2, 0.5f));
-    Signal l = sine(32, 1000.0, kSr, 0.5f), r = l;
-
-    // Un sotto-blocco alla volta: ad ogni passo la somma dei pesi per lato vale 1.
-    auto step = [&](int blocks)
-    {
-        for (int b = 0; b < blocks; ++b)
-        {
-            runStereo(e, l, r, 32);
-            checkWeightSums(e);
-        }
-    };
-
-    step(3);
-    checkFinalWeights(e, 2);
-
-    // 2 -> 16, lasciando finire la rampa (50 ms = 75 sotto-blocchi a 48 kHz).
-    e.setSettings(makeSettings(16, 0.5f));
-    step(80);
-    checkFinalWeights(e, 16);
-
-    // 16 -> 4 interrotto dopo 10 sotto-blocchi da 4 -> 8, poi 8 -> 2 a rampa ancora in corso, infine 2 -> 16.
-    e.setSettings(makeSettings(4, 0.5f));
-    step(10);
-    CHECK(e.voiceWeight(0) != 2.0f / 4.0f);
-    e.setSettings(makeSettings(8, 0.5f));
-    step(7);
-    e.setSettings(makeSettings(2, 0.5f));
-    step(80);
-    checkFinalWeights(e, 2);
-
-    e.setSettings(makeSettings(16, 0.5f));
-    step(2);
-    e.setSettings(makeSettings(2, 0.5f)); // ritorno a rampa appena iniziata
-    step(80);
-    checkFinalWeights(e, 2);
-
-    // Le voci oltre N pesano 0 anche per N = 4 e 8.
-    for (int n : {4, 8})
-    {
-        e.setSettings(makeSettings(n, 0.5f));
-        step(80);
-        checkFinalWeights(e, n);
-        for (int v = n; v < kMaxVoices; ++v)
-        {
-            CHECK(e.voiceWeight(v) == 0.0f);
-        }
-    }
-}
-
 TEST_CASE("Engine accepts any block length, including 0, 1, odd and larger than maxBlockSize", "[engine]")
 {
     DriftEngine e;
     prepareEngine(e);
-    e.setSettings(makeSettings(8, 1.0f, 1.0f, 0.5f, 0.5f));
+    e.setSettings(makeSettings(8, 50, 1.0f, 1.0f, 0.5f, 0.5f));
     for (int n : {0, 1, 2, 31, 32, 33, 63, 97, 511, 512, 513, 1000, 4096, 5000})
     {
         Signal l = noise(static_cast<size_t>(n), 7u, 0.5f), r = l;
@@ -199,44 +137,228 @@ TEST_CASE("Engine accepts any block length, including 0, 1, odd and larger than 
     }
 }
 
-TEST_CASE("Engine mono: odd voices stay at weight 0 and the output is finite", "[engine]")
+TEST_CASE("Engine reports the target channel of each side", "[engine]")
 {
     DriftEngine e;
-    prepareEngine(e, 1);
-    e.setSettings(makeSettings(8, 1.0f, 1.0f, 0.3f, 1.0f));
-    Signal x = sine(48000, 1000.0, kSr, 0.5f);
-    for (size_t pos = 0; pos < x.size(); pos += 32)
-    {
-        float* chans[1] = {x.data() + pos};
-        juce::AudioBuffer<float> buf(chans, 1, 32);
-        e.process(buf);
-        double sum = 0.0;
-        for (int v = 0; v < kMaxVoices; ++v)
-        {
-            if ((v & 1) != 0)
-            {
-                REQUIRE(e.voiceWeight(v) == 0.0f);
-            }
-            sum += static_cast<double>(e.voiceWeight(v));
-        }
-        REQUIRE(std::fabs(sum - 1.0) < 1.0e-6);
-    }
-    CHECK(allFinite(x));
-    CHECK(rms(x) > 0.2);
+    prepareEngine(e);
+    CHECK(e.channelOf(0) == 1);
+    CHECK(e.channelOf(1) == 2);
+    CHECK_FALSE(e.isFading(0));
+    CHECK_FALSE(e.isFading(1));
 
-    // Cambio di N in mono: le voci dispari restano a 0 durante tutta la rampa.
-    e.setSettings(makeSettings(16, 1.0f));
-    for (int b = 0; b < 80; ++b)
+    e.setSettings(makeSettings(12, 63, 1.0f));
+    Signal l(64, 0.1f), r = l;
+    runStereo(e, l, r, 64);
+    CHECK(e.channelOf(0) == 12);
+    CHECK(e.channelOf(1) == 63);
+    // Il primo blocco dopo prepare() non fa fade: i valori sono i target.
+    CHECK_FALSE(e.isFading(0));
+    CHECK_FALSE(e.isFading(1));
+
+    // Numeri fuori range vengono limitati a 1..64.
+    e.setSettings(makeSettings(0, 100, 1.0f));
+    runStereo(e, l, r, 64);
+    CHECK(e.channelOf(0) == 1);
+    CHECK(e.channelOf(1) == 64);
+}
+
+TEST_CASE("Engine channel change: about 250 ms fade, independent sides", "[engine]")
+{
+    const size_t n = 48000, switchAt = 9600;
+    const Signal in = sine(n, 1000.0, kSr, 0.5f);
+    const EngineSettings before = makeSettings(5, 9, 1.0f);
+    EngineSettings after = before;
+    after.channelL = 40;
+
+    auto run = [&](const EngineSettings& second, Signal& l, Signal& r)
     {
-        float* chans[1] = {x.data()};
-        juce::AudioBuffer<float> buf(chans, 1, 32);
-        e.process(buf);
-        for (int v = 1; v < kMaxVoices; v += 2)
-        {
-            REQUIRE(e.voiceWeight(v) == 0.0f);
-        }
+        DriftEngine e;
+        prepareEngine(e);
+        e.setSettings(before);
+        l = in;
+        r = in;
+        runStereo(e, l, r, 0, switchAt, 64);
+        e.setSettings(second);
+        runStereo(e, l, r, switchAt, n, 64);
+    };
+    Signal refL, refR, chL, chR;
+    run(before, refL, refR);
+    run(after, chL, chR);
+
+    // R non è toccato: bit-identico al riferimento. L cambia.
+    CHECK(chR == refR);
+    CHECK(chL != refL);
+    for (size_t i = 0; i < switchAt; ++i)
+    {
+        REQUIRE(chL[i] == refL[i]);
     }
-    CHECK(e.voiceWeight(0) == 2.0f / 16.0f);
+
+    // Durata del fade: 250 ms = 375 sotto-blocchi da 32 campioni.
+    DriftEngine e;
+    prepareEngine(e);
+    e.setSettings(before);
+    Signal l = in, r = in;
+    runStereo(e, l, r, 0, 4096, 64);
+    e.setSettings(after);
+    Signal tmpL(32, 0.25f), tmpR = tmpL;
+    runStereo(e, tmpL, tmpR, 32);
+    CHECK(e.isFading(0));
+    CHECK_FALSE(e.isFading(1));
+    CHECK(e.channelOf(0) == 40);
+    CHECK(e.channelOf(1) == 9);
+    const int blocks = 1 + blocksUntilFadeEnds(e, 0);
+    const double fadeMs = blocks * 32.0 / kSr * 1000.0;
+    std::printf("[engine] channel fade: %.1f ms\n", fadeMs);
+    CHECK(fadeMs > 245.0);
+    CHECK(fadeMs < 256.0);
+
+    // Senza click: il delta campione-campione non supera quello di regime.
+    double steady = 0.0;
+    for (int c : {5, 40})
+    {
+        DriftEngine s;
+        prepareEngine(s);
+        s.setSettings(makeSettings(c, 9, 1.0f));
+        Signal sl = in, sr2 = in;
+        runStereo(s, sl, sr2, 64);
+        steady = std::max(steady, maxDelta(sl, 4800, n));
+    }
+    const double during = maxDelta(chL, switchAt, n);
+    std::printf("[engine] channel change max delta %.5f (steady %.5f)\n", during, steady);
+    CHECK(during <= 1.05 * steady + 1.0e-4);
+
+    // A fade concluso l'uscita ha il livello di regime del nuovo canale.
+    DriftEngine s;
+    prepareEngine(s);
+    s.setSettings(makeSettings(40, 9, 1.0f));
+    Signal sl = in, sr2 = in;
+    runStereo(s, sl, sr2, 64);
+    CHECK(toDb(rms(chL, n - 4800, n)) == Approx(toDb(rms(sl, n - 4800, n))).margin(0.01));
+}
+
+TEST_CASE("Engine channel change during a fade restarts from the current value", "[engine]")
+{
+    const size_t n = 48000;
+    const Signal in = sine(n, 1000.0, kSr, 0.5f);
+    DriftEngine e;
+    prepareEngine(e);
+    e.setSettings(makeSettings(5, 9, 1.0f));
+    Signal l = in, r = in;
+    runStereo(e, l, r, 0, 4800, 64);
+    e.setSettings(makeSettings(40, 9, 1.0f));
+    runStereo(e, l, r, 4800, 4800 + 4800, 64); // 100 ms: fade a metà
+    CHECK(e.isFading(0));
+    e.setSettings(makeSettings(7, 9, 1.0f)); // nuovo cambio a fade in corso, e infine un altro
+    runStereo(e, l, r, 9600, 9600 + 1920, 64);
+    CHECK(e.isFading(0));
+    e.setSettings(makeSettings(60, 9, 1.0f));
+    runStereo(e, l, r, 11520, n, 64);
+    CHECK_FALSE(e.isFading(0));
+    CHECK(e.channelOf(0) == 60);
+
+    double steady = 0.0;
+    for (int c : {5, 40, 7, 60})
+    {
+        DriftEngine s;
+        prepareEngine(s);
+        s.setSettings(makeSettings(c, 9, 1.0f));
+        Signal sl = in, sr2 = in;
+        runStereo(s, sl, sr2, 64);
+        steady = std::max(steady, maxDelta(sl, 4800, n));
+    }
+    CHECK(maxDelta(l, 4800, n) <= 1.05 * steady + 1.0e-4);
+
+    DriftEngine s;
+    prepareEngine(s);
+    s.setSettings(makeSettings(60, 9, 1.0f));
+    Signal sl = in, sr2 = in;
+    runStereo(s, sl, sr2, 64);
+    CHECK(toDb(rms(l, n - 4800, n)) == Approx(toDb(rms(sl, n - 4800, n))).margin(0.01));
+}
+
+TEST_CASE("Engine channel changes of the two sides fade independently", "[engine]")
+{
+    DriftEngine e;
+    prepareEngine(e);
+    e.setSettings(makeSettings(5, 9, 1.0f));
+    Signal l(64, 0.2f), r = l;
+    runStereo(e, l, r, 64);
+
+    e.setSettings(makeSettings(6, 9, 1.0f)); // solo L
+    runStereo(e, l, r, 32);
+    CHECK(e.isFading(0));
+    CHECK_FALSE(e.isFading(1));
+
+    // R cambia 100 ms dopo: i due fade sono sfasati e finiscono in momenti diversi.
+    for (int b = 0; b < 150; ++b)
+    {
+        runStereo(e, l, r, 32);
+    }
+    e.setSettings(makeSettings(6, 20, 1.0f));
+    runStereo(e, l, r, 32);
+    CHECK(e.isFading(0));
+    CHECK(e.isFading(1));
+    const int endL = blocksUntilFadeEnds(e, 0);
+    CHECK(e.isFading(1));
+    const int endR = blocksUntilFadeEnds(e, 1);
+    CHECK(endL > 0);
+    CHECK(endR > 0);
+    std::printf("[engine] independent fades: L ends %d blocks after R started, R %d blocks later\n", endL,
+                endR);
+}
+
+TEST_CASE("Engine reset() makes the next channel change immediate", "[engine]")
+{
+    DriftEngine e;
+    prepareEngine(e);
+    e.setSettings(makeSettings(5, 9, 1.0f));
+    Signal l(64, 0.2f), r = l;
+    runStereo(e, l, r, 64);
+    e.setSettings(makeSettings(6, 10, 1.0f));
+    runStereo(e, l, r, 32);
+    CHECK(e.isFading(0));
+    e.reset();
+    runStereo(e, l, r, 32);
+    CHECK_FALSE(e.isFading(0));
+    CHECK_FALSE(e.isFading(1));
+    CHECK(e.channelOf(0) == 6);
+    CHECK(e.channelOf(1) == 10);
+}
+
+TEST_CASE("Engine mono: only the left side is processed", "[engine]")
+{
+    const Signal x = sine(48000, 1000.0, kSr, 0.5f);
+
+    DriftEngine mono;
+    prepareEngine(mono, 1);
+    mono.setSettings(makeSettings(21, 50, 1.0f, 1.0f, 0.3f, 1.0f));
+    Signal m = x;
+    for (size_t pos = 0; pos < m.size(); pos += 32)
+    {
+        float* chans[1] = {m.data() + pos};
+        juce::AudioBuffer<float> buf(chans, 1, 32);
+        mono.process(buf);
+    }
+    CHECK(allFinite(m));
+    CHECK(rms(m) > 0.2);
+    CHECK(mono.channelOf(0) == 21);
+    CHECK_FALSE(mono.isFading(1));
+
+    // Lo stesso del lato L di un motore stereo, bit per bit.
+    DriftEngine stereo;
+    prepareEngine(stereo, 2);
+    stereo.setSettings(makeSettings(21, 50, 1.0f, 1.0f, 0.3f, 1.0f));
+    Signal l = x, r = x;
+    runStereo(stereo, l, r, 32);
+    CHECK(m == l);
+
+    // Cambio di canale in mono: fade solo sul lato 0.
+    mono.setSettings(makeSettings(22, 50, 1.0f, 1.0f, 0.3f, 1.0f));
+    float* chans[1] = {m.data()};
+    juce::AudioBuffer<float> buf(chans, 1, 32);
+    mono.process(buf);
+    CHECK(mono.isFading(0));
+    CHECK_FALSE(mono.isFading(1));
 }
 
 TEST_CASE("Engine bypass: exact at steady state, 20 ms click-free transitions", "[engine]")
@@ -247,7 +369,7 @@ TEST_CASE("Engine bypass: exact at steady state, 20 ms click-free transitions", 
 
     DriftEngine e;
     prepareEngine(e);
-    e.setSettings(makeSettings(4, 1.0f, 1.0f, 0.5f, 1.0f));
+    e.setSettings(makeSettings(4, 27, 1.0f, 1.0f, 0.5f, 1.0f));
 
     // Segmenti da 9600 campioni (200 ms): wet, bypass, wet.
     Signal l = inL, r = inR;
@@ -261,7 +383,7 @@ TEST_CASE("Engine bypass: exact at steady state, 20 ms click-free transitions", 
     CHECK(diff > 1.0e-4);
     const double wetDelta = maxDelta(l, 4800, 9600);
 
-    e.setSettings(makeSettings(4, 1.0f, 1.0f, 0.5f, 1.0f, 0.0f, true));
+    e.setSettings(makeSettings(4, 27, 1.0f, 1.0f, 0.5f, 1.0f, 0.0f, true));
     runStereo(e, l, r, 9600, 19200, 256);
 
     // Durata della transizione: ultimo campione che differisce dall'ingresso.
@@ -287,7 +409,7 @@ TEST_CASE("Engine bypass: exact at steady state, 20 ms click-free transitions", 
     CHECK(maxDelta(l, 9600, 9600 + 1100) <= 1.05 * std::max(wetDelta, inDelta) + 1.0e-4);
 
     // Smontaggio del bypass.
-    e.setSettings(makeSettings(4, 1.0f, 1.0f, 0.5f, 1.0f, 0.0f, false));
+    e.setSettings(makeSettings(4, 27, 1.0f, 1.0f, 0.5f, 1.0f, 0.0f, false));
     runStereo(e, l, r, 19200, 38400, 256);
     const double offDelta = maxDelta(l, 19200, 19200 + 1100);
     std::printf("[engine] bypass-off max delta %.5f (steady %.5f)\n", offDelta, std::max(wetDelta, inDelta));
@@ -298,72 +420,14 @@ TEST_CASE("Engine bypass: exact at steady state, 20 ms click-free transitions", 
     // Bypass dall'inizio: uscita esattamente uguale all'ingresso anche con Drift al 100 %.
     DriftEngine b;
     prepareEngine(b);
-    b.setSettings(makeSettings(16, 1.0f, 1.0f, 1.0f, 1.0f, 12.0f, true));
+    b.setSettings(makeSettings(64, 1, 1.0f, 1.0f, 1.0f, 1.0f, 12.0f, true));
     Signal bl = inL, br = inR;
     runStereo(b, bl, br, 777);
     CHECK(bl == inL);
     CHECK(br == inR);
 }
 
-TEST_CASE("Engine Randomize: same seed is a no-op, a new seed fades in about 250 ms", "[engine]")
-{
-    const size_t n = 48000;
-    const Signal in = sine(n, 1000.0, kSr, 0.5f);
-    const EngineSettings s = makeSettings(4, 1.0f);
-
-    // Riferimenti: seed A e seed B per tutto il tempo.
-    auto run = [&](std::uint64_t seedFirst, std::uint64_t seedSecond, size_t switchAt)
-    {
-        DriftEngine e;
-        prepareEngine(e, 2, kSr, seedFirst);
-        e.setSettings(s);
-        Signal l = in, r = in;
-        runStereo(e, l, r, 0, switchAt, 64);
-        e.setSeed(seedSecond, true);
-        runStereo(e, l, r, switchAt, n, 64);
-        return l;
-    };
-
-    const size_t switchAt = 12000;
-    const Signal refA = run(100, 100, switchAt); // stesso seed: niente cambia
-    const Signal refB = run(200, 200, switchAt);
-    const Signal same = run(100, 100, switchAt);
-    CHECK(same == refA);
-
-    const Signal fade = run(100, 200, switchAt);
-    // Prima del cambio identico ad A.
-    for (size_t i = 0; i < switchAt; ++i)
-    {
-        REQUIRE(fade[i] == refA[i]);
-    }
-    double maxDiff = 0.0;
-    for (size_t i = 0; i < n; ++i)
-    {
-        maxDiff = std::max(maxDiff, static_cast<double>(std::fabs(refA[i] - refB[i])));
-    }
-    REQUIRE(maxDiff > 1.0e-3);
-    // Inizio e fine del fade: quando l'uscita si stacca da A (> 2 % della differenza) e quando raggiunge B.
-    size_t first = n, last = 0;
-    for (size_t i = switchAt; i < n; ++i)
-    {
-        if (std::fabs(fade[i] - refA[i]) > 0.02 * maxDiff)
-        {
-            first = std::min(first, i);
-        }
-        if (std::fabs(fade[i] - refB[i]) > 0.02 * maxDiff)
-        {
-            last = i;
-        }
-    }
-    const double fadeMs = static_cast<double>(last - first) / kSr * 1000.0;
-    std::printf("[engine] randomize fade (2%%..98%%): %.1f ms, max |A-B| %.4f\n", fadeMs, maxDiff);
-    CHECK(fadeMs > 200.0);
-    CHECK(fadeMs < 300.0);
-    const double steady = std::max(maxDelta(refA, 24000, n), maxDelta(refB, 24000, n));
-    CHECK(maxDelta(fade, switchAt, n) <= 1.05 * steady + 1.0e-4);
-}
-
-TEST_CASE("Engine is bit-exact deterministic after setSeed(..., false), noise included", "[engine]")
+TEST_CASE("Engine is bit-exact deterministic after prepare, noise included", "[engine]")
 {
     const Signal in = noise(48000, 99u, 0.5f);
     Signal outs[2][2];
@@ -371,8 +435,7 @@ TEST_CASE("Engine is bit-exact deterministic after setSeed(..., false), noise in
     {
         DriftEngine e;
         e.prepare(kSr, 512, 2);
-        e.setSeed(0xABCDEF0123ull, false);
-        e.setSettings(makeSettings(8, 0.8f, 0.9f, 0.6f, 1.0f, -3.0f));
+        e.setSettings(makeSettings(33, 12, 0.8f, 0.9f, 0.6f, 1.0f, -3.0f));
         o[0] = in;
         o[1] = in;
         runStereo(e, o[0], o[1], 300);
@@ -380,45 +443,46 @@ TEST_CASE("Engine is bit-exact deterministic after setSeed(..., false), noise in
     CHECK(outs[0][0] == outs[1][0]);
     CHECK(outs[0][1] == outs[1][1]);
     CHECK(rms(outs[0][0]) > 0.0);
-    // L e R hanno stesso ingresso ma tolleranze diverse.
+    // L e R hanno stesso ingresso ma canali diversi.
     CHECK(outs[0][0] != outs[0][1]);
 }
 
-TEST_CASE("Engine noise floor is about -84 dBFS RMS, independent of N", "[engine]")
+TEST_CASE("Engine noise floor is about -84 dBFS RMS per side, whatever the channel", "[engine]")
 {
-    // Più seed: con N = 2 ogni lato ha una sola voce e il suo scarto di livello (+-1.5 dB, limits) arriva
-    // direttamente in uscita, quindi si stampa il caso peggiore.
-    for (int voices : {2, 4, 8, 16})
-    {
-        double worstDev = 0.0, sumDb = 0.0;
-        for (std::uint64_t seed = 1; seed <= 30; ++seed)
-        {
-            DriftEngine e;
-            prepareEngine(e, 2, kSr, seed * 104729u);
-            e.setSettings(makeSettings(voices, 1.0f, 1.0f, 0.0f, 1.0f));
-            Signal l(48000, 0.0f), r(48000, 0.0f);
-            runStereo(e, l, r, 512);
-            const double dbL = toDb(rms(l, 4800)), dbR = toDb(rms(r, 4800));
-            worstDev = std::max({worstDev, std::fabs(dbL + 84.0), std::fabs(dbR + 84.0)});
-            sumDb += dbL + dbR;
-        }
-        const double meanDb = sumDb / 60.0;
-        std::printf(
-            "[engine] noise N=%2d: mean %.2f dBFS, worst |dev from -84| %.2f dB (30 seeds, L and R)\n",
-            voices, meanDb, worstDev);
-        // Ogni seed e lato entro lo scarto voluto tra le voci piu' 0.5 dB; la media non dipende da N.
-        CHECK(worstDev <= static_cast<double>(limits::kNoiseSpreadDb) + 0.5);
-        CHECK(std::fabs(meanDb + 84.0) <= 0.5);
-    }
-}
-
-TEST_CASE("Engine produces L/R differences with Drift > 0 and identical input", "[engine]")
-{
-    for (int voices : {2, 4, 16})
+    // Tutti i 64 canali: il livello di ogni canale è -84 dBFS più il suo scarto (+-1.5 dB, limits), quindi il
+    // caso peggiore sta entro lo scarto voluto più 0.5 dB; la media dei 64 canali non dipende dalla scelta.
+    double worstDev = 0.0, sumDb = 0.0;
+    int measured = 0;
+    for (int c = 1; c <= kNumConsoleChannels / 2; ++c)
     {
         DriftEngine e;
         prepareEngine(e);
-        e.setSettings(makeSettings(voices, 1.0f));
+        e.setSettings(makeSettings(c, c + kNumConsoleChannels / 2, 1.0f, 1.0f, 0.0f, 1.0f));
+        Signal l(48000, 0.0f), r(48000, 0.0f);
+        runStereo(e, l, r, 512);
+        for (const Signal* s : {&l, &r})
+        {
+            const double db = toDb(rms(*s, 4800));
+            worstDev = std::max(worstDev, std::fabs(db + 84.0));
+            sumDb += db;
+            ++measured;
+        }
+    }
+    const double meanDb = sumDb / measured;
+    std::printf("[engine] noise, %d channels: mean %.2f dBFS, worst |dev from -84| %.2f dB\n", measured,
+                meanDb, worstDev);
+    CHECK(measured == kNumConsoleChannels);
+    CHECK(worstDev <= static_cast<double>(limits::kNoiseSpreadDb) + 0.5);
+    CHECK(std::fabs(meanDb + 84.0) <= 0.5);
+}
+
+TEST_CASE("Engine L and R differ for different channels, and match for the same channel", "[engine]")
+{
+    for (const auto& [cl, cr] : {std::pair{1, 2}, std::pair{10, 50}, std::pair{64, 1}})
+    {
+        DriftEngine e;
+        prepareEngine(e);
+        e.setSettings(makeSettings(cl, cr, 1.0f));
         Signal l = noise(24000, 5u, 0.5f), r = l;
         runStereo(e, l, r, 512);
         double maxDiff = 0.0;
@@ -426,27 +490,91 @@ TEST_CASE("Engine produces L/R differences with Drift > 0 and identical input", 
         {
             maxDiff = std::max(maxDiff, static_cast<double>(std::fabs(l[i] - r[i])));
         }
-        std::printf("[engine] L/R max difference N=%d: %.5f\n", voices, maxDiff);
+        std::printf("[engine] L/R max difference, channels %d/%d: %.5f\n", cl, cr, maxDiff);
         CHECK(maxDiff > 1.0e-3);
+    }
+
+    // Stesso canale e niente rumore: le due catene sono identiche, quindi L == R bit per bit.
+    for (int c : {1, 33, 64})
+    {
+        DriftEngine e;
+        prepareEngine(e);
+        e.setSettings(makeSettings(c, c, 1.0f, 1.0f, 0.7f, 0.0f));
+        Signal l = noise(24000, 5u, 0.5f), r = l;
+        runStereo(e, l, r, 512);
+        CHECK(l == r);
+        CHECK(rms(l) > 0.1);
     }
 }
 
 namespace
 {
-// Peggior scostamento (dB) della risposta sommata, per lato, tra 20 Hz e 10 kHz, su `seeds` seed.
-double worstSummedResponseDb(int voices, float freqTol, float phaseTol, float gainTol, int seeds)
+// Peggior scostamento (dB) tra 20 Hz e 10 kHz della somma mono (L + R) / 2 con ingresso identico, per le
+// coppie date, con le sole deviazioni di fase al 100 % e Drift al 100 %.
+double worstSummedPhaseResponseDb(const std::vector<std::pair<int, int>>& pairs)
 {
-    const int len = 16384;
+    const int len = 2048;
     double worstDb = 0.0;
-    for (int seed = 1; seed <= seeds; ++seed)
+    for (const auto& [cl, cr] : pairs)
     {
         DriftEngine e;
-        prepareEngine(e, 2, kSr, static_cast<std::uint64_t>(seed) * 7919u);
-        EngineSettings s = makeSettings(voices, 1.0f);
-        s.freqTol01 = freqTol;
-        s.phaseTol01 = phaseTol;
-        s.gainTol01 = gainTol;
+        prepareEngine(e);
+        EngineSettings s = makeSettings(cl, cr, 1.0f);
+        s.freqTol01 = 0.0f;
+        s.gainTol01 = 0.0f;
+        s.phaseTol01 = 1.0f;
         e.setSettings(s);
+        Signal l = impulse(static_cast<size_t>(len), 0, 0.5f), r = l;
+        runStereo(e, l, r, len);
+        Signal sum(l.size());
+        for (size_t i = 0; i < sum.size(); ++i)
+        {
+            sum[i] = (l[i] + r[i]) * 0.5f * 2.0f; // (L + R) / 2, normalizzato all'ampiezza 0.5 dell'impulso
+        }
+        for (int k = 0; k <= 60; ++k)
+        {
+            const double hz = 20.0 * std::pow(500.0, k / 60.0); // 20 Hz .. 10 kHz
+            worstDb = std::max(worstDb, std::fabs(responseDb(sum, kSr, hz)));
+        }
+    }
+    return worstDb;
+}
+} // namespace
+
+TEST_CASE("Mono sum of L and R with phase deviations only has no cancellations (within 0.5 dB)", "[engine]")
+{
+    // Ritardi di fase sempre positivi e piccoli (max 5 µs): la somma di due canali diversi non cancella.
+    std::vector<std::pair<int, int>> adjacent, random;
+    for (int c = 1; c <= kNumConsoleChannels; ++c)
+    {
+        adjacent.push_back({c, c % kNumConsoleChannels + 1});
+    }
+    std::mt19937 gen(20261112);
+    std::uniform_int_distribution<int> pick(1, kNumConsoleChannels);
+    for (int i = 0; i < 64; ++i)
+    {
+        random.push_back({pick(gen), pick(gen)});
+    }
+    const double worstAdjacent = worstSummedPhaseResponseDb(adjacent);
+    const double worstRandom = worstSummedPhaseResponseDb(random);
+    std::printf("[engine] mono-sum phase-only response, 20 Hz..10 kHz: adjacent pairs max |dev| = %.4f dB, "
+                "random pairs %.4f dB\n",
+                worstAdjacent, worstRandom);
+    CHECK(worstAdjacent <= 0.5);
+    CHECK(worstRandom <= 0.5);
+}
+
+TEST_CASE("Engine response with everything at 100 % stays within the per-channel maximum", "[engine]")
+{
+    // Limite superiore: massimo teorico di un canale = 2 x kMaxShelfDb + kMaxBellDb + kMaxGainDb = 3.75 dB.
+    constexpr double kUpperBoundDb = 2.0 * limits::kMaxShelfDb + limits::kMaxBellDb + limits::kMaxGainDb;
+    const int len = 4096;
+    double worstDb = 0.0;
+    for (int c = 1; c <= kNumConsoleChannels; c += 2)
+    {
+        DriftEngine e;
+        prepareEngine(e);
+        e.setSettings(makeSettings(c, c + 1, 1.0f));
         Signal l = impulse(static_cast<size_t>(len), 0, 0.5f), r = l;
         runStereo(e, l, r, len);
         for (const Signal* ir : {&l, &r})
@@ -458,56 +586,29 @@ double worstSummedResponseDb(int voices, float freqTol, float phaseTol, float ga
             }
             for (int k = 0; k <= 60; ++k)
             {
-                const double hz = 20.0 * std::pow(500.0, k / 60.0); // 20 Hz .. 10 kHz
+                const double hz = 20.0 * std::pow(500.0, k / 60.0);
                 worstDb = std::max(worstDb, std::fabs(responseDb(scaled, kSr, hz)));
             }
         }
     }
-    return worstDb;
-}
-} // namespace
-
-TEST_CASE("Engine phase-only response has no cancellations (within 0.5 dB)", "[engine]")
-{
-    // Solo ritardi di fase (freq = gain = 0): la media di voci con ritardi diversi non deve cancellare.
-    for (int voices : {2, 4, 8, 16})
-    {
-        const double worst = worstSummedResponseDb(voices, 0.0f, 1.0f, 0.0f, 30);
-        std::printf("[engine] phase-only response N=%2d, 30 seeds, 20 Hz..10 kHz: max |dev| = %.4f dB\n",
-                    voices, worst);
-        CHECK(worst <= 0.5);
-    }
+    std::printf("[engine] full response, 64 channels, 20 Hz..10 kHz: max |dev| = %.3f dB (bound %.2f)\n",
+                worstDb, kUpperBoundDb);
+    CHECK(worstDb <= kUpperBoundDb);
 }
 
-TEST_CASE("Engine summed response with everything at 100 % stays within the per-voice maximum", "[engine]")
-{
-    // Limite superiore: massimo teorico di una singola voce = 2 x kMaxShelfDb + kMaxBellDb + kMaxGainDb
-    // = 3.75 dB; la media di piu' voci non puo' superarlo.
-    constexpr double kUpperBoundDb = 2.0 * limits::kMaxShelfDb + limits::kMaxBellDb + limits::kMaxGainDb;
-    for (int voices : {2, 4, 8, 16})
-    {
-        const double worst = worstSummedResponseDb(voices, 1.0f, 1.0f, 1.0f, 40);
-        std::printf(
-            "[engine] full response N=%2d, 40 seeds, 20 Hz..10 kHz: max |dev| = %.3f dB (bound %.2f)\n",
-            voices, worst, kUpperBoundDb);
-        INFO("N = " << voices << ", measured max deviation " << worst << " dB");
-        CHECK(worst <= kUpperBoundDb);
-    }
-}
-
-TEST_CASE("Engine performance: 10 s of audio with 16 voices at maximum settings", "[engine][perf]")
+TEST_CASE("Engine performance: 10 s of audio with two chains at maximum settings", "[engine][perf]")
 {
     DriftEngine e;
-    prepareEngine(e, 2, kSr, 777);
-    e.setSettings(makeSettings(16, 1.0f, 1.0f, 1.0f, 1.0f));
+    prepareEngine(e);
+    e.setSettings(makeSettings(17, 18, 1.0f, 1.0f, 1.0f, 1.0f));
     const size_t total = 480000;
     Signal l = noise(total, 3u, 0.3f), r = noise(total, 4u, 0.3f);
 
     const auto t0 = std::chrono::steady_clock::now();
     runStereo(e, l, r, 512);
     const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    std::printf("[perf] 10 s of stereo audio, 16 voices: %.3f s (%.2f %% of one core)\n", seconds,
+    std::printf("[perf] 10 s of stereo audio, 2 chains: %.3f s (%.2f %% of one core)\n", seconds,
                 seconds * 10.0);
     CHECK(allFinite(l));
-    CHECK(seconds < 1.0);
+    CHECK(seconds < 0.25);
 }
