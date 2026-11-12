@@ -17,7 +17,7 @@ bool isAllDigits(const juce::String& s)
     return s.isNotEmpty() && s.containsOnly("0123456789");
 }
 
-// Plain decimal number without leading zeros, at most 9 digits.
+// Numero decimale semplice senza zeri iniziali, al massimo 9 cifre.
 bool parseNumber(const juce::String& s, int& out)
 {
     if (!isAllDigits(s) || s.length() > 9 || (s.length() > 1 && s[0] == '0'))
@@ -38,7 +38,7 @@ int compareIdentifiers(const juce::String& a, const juce::String& b)
     }
     if (na != nb)
     {
-        return na ? -1 : 1; // numeric identifiers have lower precedence
+        return na ? -1 : 1; // gli identificatori numerici hanno precedenza minore
     }
     // Estensione voluta rispetto a semver: "rc2" precede "rc10" (stesso prefisso alfabetico e numero finale
     // confrontato come numero), così le release candidate si ordinano come ci si aspetta.
@@ -129,7 +129,7 @@ std::optional<Version> parseVersion(const juce::String& text)
             }
             if (isAllDigits(id) && id.length() > 1 && id[0] == '0')
             {
-                return std::nullopt; // numeric identifiers have no leading zeros
+                return std::nullopt; // gli identificatori numerici non hanno zeri iniziali
             }
         }
     }
@@ -152,7 +152,7 @@ int compareVersions(const Version& a, const Version& b)
     }
     if (a.pre.isEmpty() != b.pre.isEmpty())
     {
-        return a.pre.isEmpty() ? 1 : -1; // a release is higher than any of its pre-releases
+        return a.pre.isEmpty() ? 1 : -1; // una release è superiore a qualsiasi sua pre-release
     }
     const int n = juce::jmin(a.pre.size(), b.pre.size());
     for (int i = 0; i < n; ++i)
@@ -288,7 +288,7 @@ FetchOutcome fetchReleases()
                                    .withStatusCode(&status));
     if (stream == nullptr)
     {
-        out.ok = status > 0; // an HTTP error status (JUCE gives no stream for 4xx/5xx)
+        out.ok = status > 0; // uno stato HTTP di errore (JUCE non dà uno stream per 4xx/5xx)
         out.status = status;
         out.error = "Could not reach GitHub";
         return out;
@@ -318,7 +318,7 @@ FetchOutcome fetchReleases()
     return out;
 }
 
-// ---------------------------------------------------------------------------------------- checker
+// -------------------------------------------------------------------------------------- controllo
 
 namespace
 {
@@ -413,7 +413,7 @@ UpdateChecker::UpdateChecker(Fetcher fetcher) : fetcher_(std::move(fetcher)) {}
 
 UpdateChecker::~UpdateChecker()
 {
-    masterReference.clear(); // pending message-thread callbacks become no-ops
+    masterReference.clear(); // le callback in attesa sul message thread diventano no-op
     if (worker_ != nullptr)
     {
         worker_->stopThread(kTimeoutMs + 4000);
@@ -436,7 +436,7 @@ bool UpdateChecker::check(const juce::String& currentVersion,
     }
     if (worker_ != nullptr)
     {
-        worker_->stopThread(kTimeoutMs + 4000); // already finished: only waits for the thread to exit
+        worker_->stopThread(kTimeoutMs + 4000); // già finito: aspetta solo l'uscita del thread
     }
     worker_.reset();
     worker_ = std::make_unique<Worker>(fetcher_, currentVersion, this, std::move(onResult));

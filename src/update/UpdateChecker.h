@@ -17,24 +17,24 @@ inline constexpr const char* kReleaseUrlPrefix = "https://github.com/ivanerricis
 inline constexpr int kTimeoutMs = 5000;
 inline constexpr juce::int64 kCheckIntervalMs = 24LL * 60LL * 60LL * 1000LL;
 
-// ------------------------------------------------------------------------------- pure functions
+// ------------------------------------------------------------------------------ funzioni pure
 
 // Versione semantica: MAJOR.MINOR.PATCH[-pre.release][+build]. I metadati di build sono ignorati.
 struct Version
 {
     int major = 0, minor = 0, patch = 0;
-    juce::StringArray pre; // pre-release identifiers, empty for a release
+    juce::StringArray pre; // identificatori di pre-release, vuoto per una release
 };
 
-// Accepts an optional leading "v"/"V" and surrounding white space. Anything else is rejected.
+// Accetta una "v"/"V" iniziale facoltativa e gli spazi attorno. Tutto il resto viene rifiutato.
 std::optional<Version> parseVersion(const juce::String& text);
-// Semantic versioning precedence: <0, 0 or >0. 0.1.0-rc2 < 0.1.0 < 0.1.1.
+// Precedenza semver: <0, 0 o >0. 0.1.0-rc2 < 0.1.0 < 0.1.1.
 int compareVersions(const Version& a, const Version& b);
 
 struct ReleaseInfo
 {
-    juce::String tag; // as published, e.g. "v0.2.0"
-    juce::String url; // release page
+    juce::String tag; // come pubblicato, ad esempio "v0.2.0"
+    juce::String url; // pagina della release
 };
 // Legge la risposta dell'elenco delle release di GitHub (un array JSON): salta le bozze (draft), include le
 // pre-release e sceglie la versione più alta secondo semver. Un elemento senza tag valido o senza un link
@@ -42,15 +42,15 @@ struct ReleaseInfo
 // nullopt e riempie `error` (se dato).
 std::optional<ReleaseInfo> parseReleases(const juce::String& json, juce::String* error = nullptr);
 
-// True when a new check is allowed: never checked, clock moved backwards, or at least a day has passed.
+// Vero se un nuovo controllo è permesso: mai fatto, orologio tornato indietro o passato almeno un giorno.
 bool isCheckDue(juce::int64 lastCheckMs, juce::int64 nowMs);
 
 struct FetchOutcome
 {
-    bool ok = false; // a response was received
-    int status = 0;  // HTTP status
+    bool ok = false; // è arrivata una risposta
+    int status = 0;  // stato HTTP
     juce::String body;
-    juce::String error; // transport error when !ok
+    juce::String error; // errore di trasporto se !ok
 };
 
 struct UpdateResult
@@ -62,28 +62,30 @@ struct UpdateResult
         failed
     };
     Status status = Status::failed;
-    juce::String version; // latest version (tag without "v"), when known
-    juce::String url;     // release page, for updateAvailable
-    juce::String reason;  // for failed
+    juce::String version; // ultima versione (tag senza "v"), se nota
+    juce::String url;     // pagina della release, per updateAvailable
+    juce::String reason;  // per failed
 };
 
-// Turns a (possibly failed) HTTP response into a result, comparing the highest release with `currentVersion`.
+// Trasforma una risposta HTTP (anche fallita) in un risultato, confrontando la release più alta con
+// `currentVersion`.
 UpdateResult evaluate(const FetchOutcome& response, const juce::String& currentVersion);
 
-// ------------------------------------------------------------------------------------- checker
+// ----------------------------------------------------------------------------------- controllo
 
-// Performs the request. Called on a BACKGROUND thread.
+// Esegue la richiesta. Chiamata da un thread in BACKGROUND.
 using Fetcher = std::function<FetchOutcome()>;
-// The real HTTP request (Windows and macOS). Elsewhere (no HTTP backend) it fails without any request.
+// La richiesta HTTP vera (Windows e macOS). Altrove (nessun client HTTP) fallisce senza fare richieste.
 FetchOutcome fetchReleases();
 
-// How a result reaches the message thread. The default is juce::MessageManager::callAsync; tests replace it
-// (an empty function restores the default) because plugin builds have no modal dispatch loop to pump.
+// Come un risultato arriva al message thread. Il predefinito è juce::MessageManager::callAsync; i test lo
+// sostituiscono (una funzione vuota ripristina il predefinito) perché le build del plugin non hanno un ciclo
+// di messaggi modale da far girare.
 using Poster = std::function<void(std::function<void()>)>;
 void setPosterForTests(Poster poster);
 
-// Runs one check at a time on a background thread and delivers the result on the message thread.
-// MESSAGE THREAD ONLY (except the fetcher). The destructor joins the thread (bounded by the timeout).
+// Esegue un controllo alla volta su un thread in background e consegna il risultato sul message thread.
+// SOLO MESSAGE THREAD (tranne il fetcher). Il distruttore attende il thread (entro il timeout).
 class UpdateChecker final
 {
 public:
@@ -93,9 +95,9 @@ public:
     void setFetcher(Fetcher f);
     bool isBusy() const noexcept { return busy_.load(); }
 
-    // Starts a check of `currentVersion`. Returns false (and does nothing) while another one is running.
-    // `onResult` runs on the message thread, never after this object is destroyed; guard it yourself
-    // (SafePointer) if it touches an object that may be gone.
+    // Avvia un controllo di `currentVersion`. Restituisce false (senza fare nulla) se ne sta già girando un
+    // altro. `onResult` gira sul message thread, mai dopo la distruzione di questo oggetto; proteggilo tu
+    // (SafePointer) se tocca un oggetto che potrebbe non esserci più.
     bool check(const juce::String& currentVersion, std::function<void(const UpdateResult&)> onResult);
 
 private:

@@ -83,7 +83,7 @@ Copy Driftbox.clap to ~/.clap/'
 esac
 cat > "$stage/README.txt" <<TXT
 Driftbox ${version} (${platform})
-Subtle tolerance modeling: every voice drifts slightly differently. License: AGPL-3.0-or-later (see LICENSE).
+Console-channel tolerance modeling: each side (L and R) gets its own channel number 1-64 with a fixed set of tiny tolerances. At Drift 0 % the tolerance chain is transparent. License: AGPL-3.0-or-later (see LICENSE).
 
 Installation
 ------------
