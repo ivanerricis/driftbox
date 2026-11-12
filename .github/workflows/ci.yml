@@ -1,0 +1,140 @@
+name: ci
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, labeled]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pr-title:
+    name: PR title (conventional commit)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      pull-requests: read
+    steps:
+      - uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+  clang-format:
+    name: clang-format 18
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check formatting
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-format-18
+          git ls-files 'src/*.h' 'src/*.cpp' 'tests/*.h' 'tests/*.cpp' \
+            | xargs --no-run-if-empty clang-format-18 --dry-run --Werror
+
+  clang-tidy:
+    name: clang-tidy
+    runs-on: ubuntu-24.04
+    env:
+      CPM_SOURCE_CACHE: ${{ github.workspace }}/.cpm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CPM_SOURCE_CACHE }}
+          key: cpm-tidy-${{ hashFiles('cmake/Dependencies.cmake') }}
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-tidy-18 ninja-build \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk libcurl4-openssl-dev libfreetype-dev \
+            libfontconfig1-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libglu1-mesa-dev mesa-common-dev
+      - name: Configure (compile_commands.json)
+        run: cmake --preset ci-linux -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DDRIFTBOX_BUILD_TESTS=OFF
+      - name: Generate binary data headers
+        # DriftboxUiData.h comes from the juce_add_binary_data target DriftboxUiAssets
+        # (there is no preset target to build).
+        run: cmake --build build/ci-linux --target DriftboxUiAssets
+      - name: clang-tidy
+        # Header filter anchored to this repo's src/ so .cpm and build/ headers are excluded.
+        # Any project warning fails the job (third-party diagnostics are filtered out).
+        run: |
+          git ls-files 'src/*.cpp' \
+            | xargs --no-run-if-empty clang-tidy-18 -p build/ci-linux --quiet \
+                --warnings-as-errors='*' \
+                --header-filter="^${GITHUB_WORKSPACE}/src/.*"
+
+  # AddressSanitizer + UndefinedBehaviorSanitizer on a Debug build (JUCE jasserts active).
+  sanitizers:
+    name: asan-ubsan
+    # Enforced: a sanitizer finding or a test failure fails the job (required check).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CPM_SOURCE_CACHE: ${{ github.workspace }}/.cpm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+        with:
+          key: linux-asan
+          max-size: 500M
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CPM_SOURCE_CACHE }}
+          key: cpm-asan-${{ hashFiles('cmake/Dependencies.cmake') }}
+          restore-keys: cpm-asan-
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk libcurl4-openssl-dev libfreetype-dev \
+            libfontconfig1-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libglu1-mesa-dev mesa-common-dev xvfb
+      - name: Configure
+        run: |
+          cmake --preset ci-linux-asan \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - name: Build
+        run: cmake --build --preset ci-linux-asan --parallel
+      - name: Test (ASan + UBSan)
+        # [allocation] tests are excluded: AllocationTests.cpp replaces global operator new/delete
+        # to count allocations, which conflicts with ASan's allocator interception.
+        # [perf] is excluded too: the CPU-budget tests measure wall-clock time, which ASan/UBSan
+        # inflate several times over, so they would be flaky and prove nothing; they run in the
+        # regular Release builds.
+        # The test binary is run directly because ctest cannot filter on Catch2 tags.
+        env:
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=0
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: |
+          exe="$(find build/ci-linux-asan -type f -name DriftboxTests -print -quit)"
+          xvfb-run -a "$exe" '~[allocation]~[perf]'
+
+  # Windows + Linux always.
+  build:
+    name: build
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [windows, linux]
+    uses: ./.github/workflows/build.yml
+    with:
+      platforms: '["${{ matrix.platform }}"]'
+
+  # macOS (10x minutes on the Free plan): push to main, manual runs, or PRs labelled ci:macos.
+  build-macos:
+    name: build-macos
+    if: >-
+      github.event_name == 'push'
+      || github.event_name == 'workflow_dispatch'
+      || contains(github.event.pull_request.labels.*.name, 'ci:macos')
+    uses: ./.github/workflows/build.yml
+    with:
+      platforms: '["macos"]'

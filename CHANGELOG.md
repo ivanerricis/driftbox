@@ -11,4 +11,5 @@ All notable changes to this project are documented here. The format follows the 
 - Processor state with the drift seed (hex, restored without a crossfade) and profile version, Randomize as one undo step, gesture-based undo/redo of parameter changes.
 
 ### Build and CI
+- GitHub Actions pipelines adapted from Pentagrit: PR title check, clang-format 18, clang-tidy, ASan/UBSan, Windows/Linux/macOS builds with pluginval, auval and clap-validator, packaging scripts (Windows and macOS zip, Linux tar.gz), development and branch protection docs.
 - Project scaffold: CMake with CPM (JUCE 8.0.15, clap-juce-extensions, Catch2), presets, frozen parameter and DSP contracts, test harness.
