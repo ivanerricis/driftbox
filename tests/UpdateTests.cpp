@@ -604,12 +604,9 @@ struct PanelFixture
     PanelFixture() : fake([] { return release("v0.1.1"); }), processor(), editor(processor)
     {
         processor.getSettings().resetToDefaults();
-        waitFor(
-            [this]
-            {
-                return processor.getSettings().getUpdateState().phase !=
-                       SettingsManager::UpdateState::Phase::checking;
-            });
+        using Phase = SettingsManager::UpdateState::Phase;
+        auto& settings = processor.getSettings();
+        waitFor([&settings] { return settings.getUpdateState().phase != Phase::checking; });
         editor.openSettings();
     }
     ~PanelFixture()
