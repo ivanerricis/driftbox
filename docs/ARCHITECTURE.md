@@ -24,7 +24,7 @@ for each side s (0 = L, 1 = R):
   - drive k ≤ 2.15
   - noise ≈ −84 dBFS RMS at the output
 - **Drift Amount scales everything.** At `drift = 0` every voice is the exact identity (identity biquad coefficients, allpass a = 1, gain 1, saturation skipped, no noise). Each side is then the mean of identical voices, which is the input itself.
-- **Voice weights**: the target is 2/N for v < N and 0 otherwise. Every voice ramps linearly over 30 ms on the same clock, so the weights of one side always sum to 1 and changing the channel count does not click. A voice whose weight is 0 is not processed, and it is reset before it fades back in.
+- **Voice weights**: the target is 2/N for v < N and 0 otherwise. Every voice ramps linearly over 50 ms on the same clock, so the weights of one side always sum to 1 and changing the channel count does not click. A voice whose weight is 0 is not processed, and it is reset before it fades back in.
 - **Mono**: odd voices are skipped and even voices weigh 1/(N/2).
 - **Tolerance profile**: `DriftProfile::generate(seed, version)` is pure and deterministic. It uses its own SplitMix64 with an explicit integer-to-float mapping, so the same seed gives the same sound on every OS. A new seed from Randomize crossfades between the old and new profile over 250 ms (`DriftProfile::lerp`).
 - **Control rate**: coefficients are recomputed every 32 samples from smoothed values (50 ms smoothing for the amounts).

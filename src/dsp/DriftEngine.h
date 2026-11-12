@@ -33,7 +33,7 @@ class DriftEngine
 {
 public:
     static constexpr int kControlInterval = 32; // campioni tra due aggiornamenti dei coefficienti
-    static constexpr double kVoiceRampSeconds = 0.030;
+    static constexpr double kVoiceRampSeconds = 0.050;
     static constexpr double kProfileFadeSeconds = 0.250;
     static constexpr double kBypassFadeSeconds = 0.020;
     static constexpr double kGainSmoothSeconds = 0.020;  // Output Gain
@@ -58,13 +58,49 @@ public:
     float voiceWeight(int v) const noexcept;
 
 private:
+    // Valori smussati dei parametri (aggiornati una volta per sotto-blocco).
+    struct SmoothedParams
+    {
+        float drift = 0.0f, freqTol = 0.0f, phaseTol = 0.0f, gainTol = 0.0f, saturation = 0.0f, noise = 0.0f;
+    };
+
+    // Un sotto-blocco di n <= kControlInterval campioni sui canali `numCh` (puntatori in `ch`).
+    void processChunk(float* const* ch, int numCh, int n) noexcept;
+    // Aggiorna profilo, pesi e smoothing per un sotto-blocco di n campioni; riempie w0/w1 per voce.
+    void advanceControl(int n) noexcept;
+    // Imposta i seed del profilo `profile` sui generatori di rumore delle voci (senza reset dei filtri).
+    void applyNoiseSeeds(const DriftProfile& profile) noexcept;
+    void computeTargetWeights() noexcept;
+
     double sampleRate_ = 48000.0;
     int maxBlock_ = 0, numChannels_ = 2;
     EngineSettings settings_;
     std::uint64_t seed_ = 0;
+    // profile_ è il profilo effettivo del sotto-blocco corrente; from/to servono solo durante il crossfade.
     DriftProfile profile_, fromProfile_, toProfile_;
+    bool fading_ = false;
+    float fadePos_ = 0.0f; // 0..1
     std::array<DriftChannel, kMaxVoices> voices_;
-    std::array<float, kMaxVoices> weights_{};
+
+    // Pesi: correnti, di partenza della rampa e target; rampPos_ in 0..1 (1 = rampa finita).
+    std::array<float, kMaxVoices> weights_{}, startWeights_{}, targetWeights_{};
+    std::array<float, kMaxVoices> w0_{}, w1_{}; // pesi a inizio e fine del sotto-blocco corrente
+    float rampPos_ = 1.0f;
+    int targetVoices_ = 0; // N del target corrente (0 = nessuno ancora)
+
+    SmoothedParams smooth_;
+    float outGain_ = 1.0f;
+    float wetMix_ = 1.0f; // 1 = wet, 0 = dry (bypass)
+
+    bool fresh_ = true; // nessun blocco elaborato dopo prepare()/reset(): i valori partono dai target
+    // Le voci non sono state elaborate (bypass stabile): vanno resettate alla ripresa.
+    bool voicesIdle_ = false;
+
+    // Buffer di lavoro a dimensione fissa (nessuna allocazione in process()).
+    std::array<std::array<float, kControlInterval>, 2> in_{}, acc_{};
+
     MeterState meters_;
+    float blockInPeak_ = 0.0f, blockOutPeak_ = 0.0f;
+    bool blockCeiling_ = false;
 };
 } // namespace driftbox
