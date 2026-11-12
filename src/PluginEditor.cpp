@@ -167,25 +167,6 @@ void DriftboxAudioProcessorEditor::applySettings()
 }
 
 // ---- Finestre sovrapposte ----
-namespace
-{
-// Distrugge `slot` fuori dal gestore di eventi del componente che l'ha chiesto (un pulsante non si cancella
-// dentro il proprio clic). Il confronto sul puntatore evita di distruggere un componente più nuovo.
-template <typename T>
-void releaseLater(juce::Component::SafePointer<DriftboxAudioProcessorEditor> safe, T* raw,
-                  std::unique_ptr<T> DriftboxAudioProcessorEditor::* slot)
-{
-    juce::MessageManager::callAsync(
-        [safe, raw, slot]
-        {
-            if (safe != nullptr && (safe.getComponent()->*slot).get() == raw)
-            {
-                (safe.getComponent()->*slot).reset();
-            }
-        });
-}
-} // namespace
-
 void DriftboxAudioProcessorEditor::openSettings()
 {
     if (isSettingsOpen())
@@ -229,8 +210,18 @@ void DriftboxAudioProcessorEditor::closeModal()
         return;
     }
     modal_->setVisible(false);
-    releaseLater(juce::Component::SafePointer<DriftboxAudioProcessorEditor>(this), modal_.get(),
-                 &DriftboxAudioProcessorEditor::modal_);
+    // Distrugge fuori dal gestore di eventi che ha chiesto la chiusura (un pulsante non si cancella dentro il
+    // proprio clic); il confronto sul puntatore evita di distruggere una finestra più nuova.
+    juce::Component::SafePointer<DriftboxAudioProcessorEditor> safe(this);
+    auto* raw = modal_.get();
+    juce::MessageManager::callAsync(
+        [safe, raw]
+        {
+            if (safe != nullptr && safe->modal_.get() == raw)
+            {
+                safe->modal_.reset();
+            }
+        });
     grabKeyboardFocus(); // undo e redo da tastiera tornano all'editor
 }
 
@@ -246,8 +237,16 @@ void DriftboxAudioProcessorEditor::closeMenu()
         return;
     }
     menu_->setVisible(false);
-    releaseLater(juce::Component::SafePointer<DriftboxAudioProcessorEditor>(this), menu_.get(),
-                 &DriftboxAudioProcessorEditor::menu_);
+    juce::Component::SafePointer<DriftboxAudioProcessorEditor> safe(this);
+    auto* raw = menu_.get();
+    juce::MessageManager::callAsync(
+        [safe, raw]
+        {
+            if (safe != nullptr && safe->menu_.get() == raw)
+            {
+                safe->menu_.reset();
+            }
+        });
     grabKeyboardFocus();
 }
 
