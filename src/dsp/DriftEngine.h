@@ -94,7 +94,8 @@ private:
     std::array<std::array<float, kControlInterval>, 2> in_{}, acc_{};
 
     MeterState meters_;
-    float blockInPeak_ = 0.0f, blockOutPeak_ = 0.0f;
+    float blockInPeak_ = 0.0f;
+    std::array<float, 2> blockOutPeak_{}; // per lato
     bool blockCeiling_ = false;
 };
 } // namespace driftbox

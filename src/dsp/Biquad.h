@@ -15,6 +15,10 @@ struct BiquadCoeffs
     static BiquadCoeffs lowShelf(double sampleRate, double hz, double q, double gainDb) noexcept;
     static BiquadCoeffs highShelf(double sampleRate, double hz, double q, double gainDb) noexcept;
     static BiquadCoeffs peak(double sampleRate, double hz, double q, double gainDb) noexcept;
+
+    // Modulo della risposta in frequenza |H(e^jw)| in dB alla frequenza hz (per la curva della UI, non per
+    // l'audio thread: usa std::log10). I coefficienti identità danno esattamente 0 dB.
+    double magnitudeDb(double sampleRate, double hz) const noexcept;
 };
 
 // Biquad in forma trasposta diretta II, float, un canale.

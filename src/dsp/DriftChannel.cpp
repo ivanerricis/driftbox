@@ -51,34 +51,48 @@ void DriftChannel::updateFilter(Biquad& filter, FilterKey& key,
         design(sampleRate, static_cast<double>(hz), static_cast<double>(q), static_cast<double>(gainDb)));
 }
 
+DriftChannel::Design DriftChannel::design(const VoiceTolerance& tol, const VoiceAmounts& amounts) noexcept
+{
+    using namespace limits;
+
+    Design d;
+    // Equalizzazione: low shelf, campana, high shelf.
+    d.lowShelf = {kLowShelfHz * std::exp2(tol.lowShelfOct * kShelfSpreadOct), kShelfQ,
+                  tol.lowShelfDb * amounts.freq * kMaxShelfDb};
+    d.bell = {kBellLoHz * std::pow(kBellHiHz / kBellLoHz, tol.bellPos01), kBellQ,
+              tol.bellDb * amounts.freq * kMaxBellDb};
+    d.highShelf = {kHighShelfHz * std::exp2(tol.highShelfOct * kShelfSpreadOct), kShelfQ,
+                   tol.highShelfDb * amounts.freq * kMaxShelfDb};
+    // Ritardo dell'allpass, sempre >= 0.
+    d.delaySeconds =
+        static_cast<double>(tol.delay01) * static_cast<double>(amounts.phase) * kMaxDelayUs * 1.0e-6;
+    d.gainDb = static_cast<double>(tol.gainDb) * static_cast<double>(amounts.gain) * kMaxGainDb;
+    d.drive = 1.0f + kMaxDrive * amounts.saturation * (1.0f + kDriveSpread * tol.driveSpread);
+    return d;
+}
+
 void DriftChannel::update(const VoiceTolerance& tol, const VoiceAmounts& amounts, float noiseScale) noexcept
 {
     using namespace limits;
 
-    // Equalizzazione: low shelf, campana, high shelf.
-    updateFilter(lowShelf_, lowKey_, &BiquadCoeffs::lowShelf, sampleRate_,
-                 kLowShelfHz * std::exp2(tol.lowShelfOct * kShelfSpreadOct), kShelfQ,
-                 tol.lowShelfDb * amounts.freq * kMaxShelfDb);
-    updateFilter(bell_, bellKey_, &BiquadCoeffs::peak, sampleRate_,
-                 kBellLoHz * std::pow(kBellHiHz / kBellLoHz, tol.bellPos01), kBellQ,
-                 tol.bellDb * amounts.freq * kMaxBellDb);
-    updateFilter(highShelf_, highKey_, &BiquadCoeffs::highShelf, sampleRate_,
-                 kHighShelfHz * std::exp2(tol.highShelfOct * kShelfSpreadOct), kShelfQ,
-                 tol.highShelfDb * amounts.freq * kMaxShelfDb);
+    const Design d = design(tol, amounts);
+    updateFilter(lowShelf_, lowKey_, &BiquadCoeffs::lowShelf, sampleRate_, d.lowShelf.hz, d.lowShelf.q,
+                 d.lowShelf.gainDb);
+    updateFilter(bell_, bellKey_, &BiquadCoeffs::peak, sampleRate_, d.bell.hz, d.bell.q, d.bell.gainDb);
+    updateFilter(highShelf_, highKey_, &BiquadCoeffs::highShelf, sampleRate_, d.highShelf.hz, d.highShelf.q,
+                 d.highShelf.gainDb);
 
     // Allpass del primo ordine: ritardo frazionario d >= 0 (in campioni), a = (1 - d) / (1 + d);
     // con d = 0 si ha a = 1.
-    const double d = static_cast<double>(tol.delay01) * static_cast<double>(amounts.phase) * kMaxDelayUs *
-                     1.0e-6 * sampleRate_;
-    apCoeff_ = static_cast<float>((1.0 - d) / (1.0 + d));
+    const double dl = d.delaySeconds * sampleRate_;
+    apCoeff_ = static_cast<float>((1.0 - dl) / (1.0 + dl));
 
     // Guadagno: esattamente 1 quando l'esponente è 0.
-    const double gainDb = static_cast<double>(tol.gainDb) * static_cast<double>(amounts.gain) * kMaxGainDb;
-    gain_ = gainDb == 0.0 ? 1.0f : static_cast<float>(std::pow(10.0, gainDb / 20.0));
+    gain_ = d.gainDb == 0.0 ? 1.0f : static_cast<float>(std::pow(10.0, d.gainDb / 20.0));
 
     // Saturazione: k = 1 -> saltata. La miscela m = clamp(k - 1, 0, 1) porta con continuità da y (m = 0) a
     // tanh(k y) / k (m = 1), così non c'è salto quando la quantità arriva a 0.
-    drive_ = 1.0f + kMaxDrive * amounts.saturation * (1.0f + kDriveSpread * tol.driveSpread);
+    drive_ = d.drive;
     satMix_ = clampTo(drive_ - 1.0f, 0.0f, 1.0f);
 
     // Rumore: l'RMS della voce deve valere il target. Il bianco uniforme ha RMS 1/sqrt(3) e il passa-basso

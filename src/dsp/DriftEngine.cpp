@@ -246,7 +246,8 @@ void DriftEngine::processChunk(float* const* ch, int numCh, int n) noexcept
             for (int i = 0; i < n; ++i)
             {
                 out[i] = in[static_cast<size_t>(i)];
-                blockOutPeak_ = std::max(blockOutPeak_, std::fabs(out[i]));
+                blockOutPeak_[static_cast<size_t>(c)] =
+                    std::max(blockOutPeak_[static_cast<size_t>(c)], std::fabs(out[i]));
             }
             continue;
         }
@@ -265,7 +266,8 @@ void DriftEngine::processChunk(float* const* ch, int numCh, int n) noexcept
                 y = in[k] + (y - in[k]) * m;
             }
             out[i] = y;
-            blockOutPeak_ = std::max(blockOutPeak_, std::fabs(y));
+            blockOutPeak_[static_cast<size_t>(c)] =
+                std::max(blockOutPeak_[static_cast<size_t>(c)], std::fabs(y));
         }
     }
 }
@@ -281,7 +283,7 @@ void DriftEngine::process(juce::AudioBuffer<float>& buffer) noexcept
 
     std::array<float*, 2> ptr{buffer.getWritePointer(0), numCh > 1 ? buffer.getWritePointer(1) : nullptr};
     blockInPeak_ = 0.0f;
-    blockOutPeak_ = 0.0f;
+    blockOutPeak_.fill(0.0f);
     blockCeiling_ = false;
 
     for (int start = 0; start < total; start += kControlInterval)
@@ -292,7 +294,11 @@ void DriftEngine::process(juce::AudioBuffer<float>& buffer) noexcept
     }
 
     meters_.inPeakDb.store(gainToDb(blockInPeak_), std::memory_order_relaxed);
-    meters_.outPeakDb.store(gainToDb(blockOutPeak_), std::memory_order_relaxed);
+    const float peakL = blockOutPeak_[0];
+    const float peakR = numCh > 1 ? blockOutPeak_[1] : peakL; // mono: R ripete L
+    meters_.outPeakDbL.store(gainToDb(peakL), std::memory_order_relaxed);
+    meters_.outPeakDbR.store(gainToDb(peakR), std::memory_order_relaxed);
+    meters_.outPeakDb.store(gainToDb(std::max(peakL, peakR)), std::memory_order_relaxed);
     meters_.ceilingActive.store(blockCeiling_, std::memory_order_relaxed);
 }
 } // namespace driftbox

@@ -30,6 +30,22 @@ struct VoiceAmounts
 class DriftChannel
 {
 public:
+    // Parametri di progetto di una catena (tolleranze x quantità x limiti): l'unica fonte per update() e per
+    // la curva mostrata dalla UI (ToleranceResponse.h), così le formule non esistono in due copie.
+    struct Design
+    {
+        struct Filter
+        {
+            float hz = 0.0f, q = 0.0f, gainDb = 0.0f;
+        };
+        Filter lowShelf, bell, highShelf;
+        double delaySeconds = 0.0; // ritardo dell'allpass, >= 0
+        double gainDb = 0.0;       // guadagno broadband
+        float drive = 1.0f;        // k della saturazione
+    };
+
+    static Design design(const VoiceTolerance& tol, const VoiceAmounts& amounts) noexcept;
+
     void prepare(double sampleRate) noexcept;
 
     // Azzera lo stato dei filtri e riavvia il generatore di rumore dal suo seed.
