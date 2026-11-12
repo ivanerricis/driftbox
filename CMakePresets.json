@@ -1,0 +1,91 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": { "CMAKE_POLICY_VERSION_MINIMUM": "3.5" }
+    },
+    {
+      "name": "win-vs",
+      "displayName": "Windows - Visual Studio 2026",
+      "inherits": "base",
+      "generator": "Visual Studio 18 2026",
+      "architecture": "x64",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "win-ninja",
+      "displayName": "Windows - Ninja (run from a VS developer prompt)",
+      "inherits": "base",
+      "generator": "Ninja",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "mac-universal",
+      "displayName": "macOS - universal (arm64;x86_64)",
+      "inherits": "base",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_OSX_ARCHITECTURES": "arm64;x86_64",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "11.0"
+      },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" }
+    },
+    {
+      "name": "linux",
+      "displayName": "Linux - Ninja",
+      "inherits": "base",
+      "generator": "Ninja",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
+    },
+    { "name": "ci-windows", "inherits": "win-ninja", "displayName": "CI - Windows" },
+    { "name": "ci-macos", "inherits": "mac-universal", "displayName": "CI - macOS" },
+    { "name": "ci-linux", "inherits": "linux", "displayName": "CI - Linux" },
+    {
+      "name": "ci-linux-asan",
+      "inherits": "linux",
+      "displayName": "CI - Linux, Debug + ASan/UBSan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "DRIFTBOX_BUILD_TESTS": "ON",
+        "CMAKE_C_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined",
+        "CMAKE_SHARED_LINKER_FLAGS": "-fsanitize=address,undefined",
+        "CMAKE_MODULE_LINKER_FLAGS": "-fsanitize=address,undefined"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "win-vs-release", "configurePreset": "win-vs", "configuration": "Release" },
+    { "name": "win-vs-debug", "configurePreset": "win-vs", "configuration": "Debug" },
+    { "name": "win-ninja", "configurePreset": "win-ninja" },
+    { "name": "mac-universal", "configurePreset": "mac-universal" },
+    { "name": "linux", "configurePreset": "linux" },
+    { "name": "ci-windows", "configurePreset": "ci-windows" },
+    { "name": "ci-macos", "configurePreset": "ci-macos" },
+    { "name": "ci-linux", "configurePreset": "ci-linux" },
+    { "name": "ci-linux-asan", "configurePreset": "ci-linux-asan", "targets": ["DriftboxTests"] }
+  ],
+  "testPresets": [
+    {
+      "name": "win-vs-release",
+      "configurePreset": "win-vs",
+      "configuration": "Release",
+      "output": { "outputOnFailure": true }
+    },
+    { "name": "win-ninja", "configurePreset": "win-ninja", "output": { "outputOnFailure": true } },
+    { "name": "mac-universal", "configurePreset": "mac-universal", "output": { "outputOnFailure": true } },
+    { "name": "linux", "configurePreset": "linux", "output": { "outputOnFailure": true } },
+    { "name": "ci-windows", "configurePreset": "ci-windows", "output": { "outputOnFailure": true } },
+    { "name": "ci-macos", "configurePreset": "ci-macos", "output": { "outputOnFailure": true } },
+    { "name": "ci-linux", "configurePreset": "ci-linux", "output": { "outputOnFailure": true } },
+    { "name": "ci-linux-asan", "configurePreset": "ci-linux-asan", "output": { "outputOnFailure": true } }
+  ]
+}

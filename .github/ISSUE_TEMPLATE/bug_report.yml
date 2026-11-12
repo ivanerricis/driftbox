@@ -1,0 +1,55 @@
+name: Bug report
+description: Report a problem with Driftbox
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Driftbox version
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: format
+    attributes:
+      label: Plugin format
+      options: [VST3, CLAP, AU]
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "Windows 11 23H2 / macOS 14.5 arm64 / Ubuntu 22.04"
+    validations:
+      required: true
+  - type: input
+    id: host
+    attributes:
+      label: Host / DAW and version
+      placeholder: "Reaper 7.20"
+    validations:
+      required: true
+  - type: input
+    id: audio
+    attributes:
+      label: Sample rate and block size
+      placeholder: "48 kHz / 512"
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional information
+      description: Logs, crash reports, a saved preset or project snippet.

@@ -1,0 +1,15 @@
+# performance-enum-size is disabled on purpose: several enums are documented frozen contracts (their
+# underlying type is part of the persisted/cast-from-integer layout), so shrinking them to
+# std::uint8_t would only trade a few bytes for a risk of changing that contract.
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  performance-*,
+  -performance-enum-size,
+  modernize-use-override,
+  modernize-use-nullptr,
+  readability-braces-around-statements
+WarningsAsErrors: ''
+# Project headers only; CI also passes an absolute --header-filter so .cpm/ and build/ never match.
+HeaderFilterRegex: '^.*/driftbox/src/.*'

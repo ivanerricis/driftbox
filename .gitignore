@@ -1,0 +1,11 @@
+build/
+tools/
+.vs/
+.idea/
+.vscode/
+CMakeUserPresets.json
+*.user
+.DS_Store
+
+snap/
+dist/

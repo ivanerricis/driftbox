@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Generato da CMake a partire da PluginInfo.h.in. Non modificare.
+#pragma once
+
+namespace driftbox::info
+{
+inline constexpr const char* kName = "@PROJECT_NAME@";
+inline constexpr const char* kVersion = "@PROJECT_VERSION@";
+inline constexpr const char* kCompany = "Driftbox";
+} // namespace driftbox::info
