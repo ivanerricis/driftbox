@@ -1,21 +1,103 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "dsp/Biquad.h"
+#include <algorithm>
+#include <cmath>
 
 namespace driftbox
 {
-// STUB (scaffold T0): restituiscono l'identità. L'implementazione RBJ arriva con il task T2.
-BiquadCoeffs BiquadCoeffs::lowShelf(double, double, double, double) noexcept
+namespace
 {
-    return identity();
+constexpr double kPi = 3.14159265358979323846;
+constexpr double kMinHz = 10.0;
+constexpr double kMaxHzRatio = 0.45; // frazione della frequenza di campionamento
+constexpr double kMinQ = 0.05;
+
+// Coefficienti non normalizzati del cookbook RBJ.
+struct Raw
+{
+    double b0, b1, b2, a0, a1, a2;
+};
+
+BiquadCoeffs normalize(const Raw& r) noexcept
+{
+    const double inv = 1.0 / r.a0;
+    BiquadCoeffs c;
+    c.b0 = static_cast<float>(r.b0 * inv);
+    c.b1 = static_cast<float>(r.b1 * inv);
+    c.b2 = static_cast<float>(r.b2 * inv);
+    c.a1 = static_cast<float>(r.a1 * inv);
+    c.a2 = static_cast<float>(r.a2 * inv);
+    return c;
 }
 
-BiquadCoeffs BiquadCoeffs::highShelf(double, double, double, double) noexcept
+// Limita hz a [10, 0.45 fs] e q a un minimo positivo, così i coefficienti restano stabili a ogni sample rate.
+void sanitizeParams(double sampleRate, double& hz, double& q) noexcept
 {
-    return identity();
+    hz = std::clamp(hz, kMinHz, kMaxHzRatio * sampleRate);
+    q = std::max(q, kMinQ);
+}
+} // namespace
+
+BiquadCoeffs BiquadCoeffs::lowShelf(double sampleRate, double hz, double q, double gainDb) noexcept
+{
+    if (gainDb == 0.0)
+    {
+        return identity();
+    }
+    sanitizeParams(sampleRate, hz, q);
+    const double a = std::pow(10.0, gainDb / 40.0);
+    const double w0 = 2.0 * kPi * hz / sampleRate;
+    const double cs = std::cos(w0);
+    const double tsa = 2.0 * std::sqrt(a) * (std::sin(w0) / (2.0 * q)); // 2 sqrt(A) alpha
+    Raw r;
+    r.b0 = a * ((a + 1.0) - (a - 1.0) * cs + tsa);
+    r.b1 = 2.0 * a * ((a - 1.0) - (a + 1.0) * cs);
+    r.b2 = a * ((a + 1.0) - (a - 1.0) * cs - tsa);
+    r.a0 = (a + 1.0) + (a - 1.0) * cs + tsa;
+    r.a1 = -2.0 * ((a - 1.0) + (a + 1.0) * cs);
+    r.a2 = (a + 1.0) + (a - 1.0) * cs - tsa;
+    return normalize(r);
 }
 
-BiquadCoeffs BiquadCoeffs::peak(double, double, double, double) noexcept
+BiquadCoeffs BiquadCoeffs::highShelf(double sampleRate, double hz, double q, double gainDb) noexcept
 {
-    return identity();
+    if (gainDb == 0.0)
+    {
+        return identity();
+    }
+    sanitizeParams(sampleRate, hz, q);
+    const double a = std::pow(10.0, gainDb / 40.0);
+    const double w0 = 2.0 * kPi * hz / sampleRate;
+    const double cs = std::cos(w0);
+    const double tsa = 2.0 * std::sqrt(a) * (std::sin(w0) / (2.0 * q));
+    Raw r;
+    r.b0 = a * ((a + 1.0) + (a - 1.0) * cs + tsa);
+    r.b1 = -2.0 * a * ((a - 1.0) + (a + 1.0) * cs);
+    r.b2 = a * ((a + 1.0) + (a - 1.0) * cs - tsa);
+    r.a0 = (a + 1.0) - (a - 1.0) * cs + tsa;
+    r.a1 = 2.0 * ((a - 1.0) - (a + 1.0) * cs);
+    r.a2 = (a + 1.0) - (a - 1.0) * cs - tsa;
+    return normalize(r);
+}
+
+BiquadCoeffs BiquadCoeffs::peak(double sampleRate, double hz, double q, double gainDb) noexcept
+{
+    if (gainDb == 0.0)
+    {
+        return identity();
+    }
+    sanitizeParams(sampleRate, hz, q);
+    const double a = std::pow(10.0, gainDb / 40.0);
+    const double w0 = 2.0 * kPi * hz / sampleRate;
+    const double cs = std::cos(w0);
+    const double alpha = std::sin(w0) / (2.0 * q);
+    Raw r;
+    r.b0 = 1.0 + alpha * a;
+    r.b1 = -2.0 * cs;
+    r.b2 = 1.0 - alpha * a;
+    r.a0 = 1.0 + alpha / a;
+    r.a1 = -2.0 * cs;
+    r.a2 = 1.0 - alpha / a;
+    return normalize(r);
 }
 } // namespace driftbox

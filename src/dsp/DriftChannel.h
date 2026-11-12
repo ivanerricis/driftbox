@@ -18,7 +18,7 @@ struct VoiceAmounts
 
 // Una voce interna: catena DSP indipendente e molto leggera.
 //   ingresso -> low shelf -> campana -> high shelf -> allpass del primo ordine (ritardo frazionario >= 0)
-//            -> guadagno -> saturazione morbida tanh(k x) / k -> + rumore
+//            -> guadagno -> miscela continua verso tanh(k x) / k -> + rumore
 // Tutte le deviazioni vengono da VoiceTolerance (profilo) x VoiceAmounts x limiti (vedi DriftProfile.h).
 //
 // Contratto:
@@ -49,12 +49,31 @@ public:
     float processSample(float x) noexcept;
 
 private:
+    // Ingressi dell'ultimo calcolo dei coefficienti di un filtro: si ricalcola solo se cambiano (confronto
+    // esatto).
+    struct FilterKey
+    {
+        float gainDb = 0.0f, hz = 0.0f;
+        double sampleRate = 0.0;
+    };
+
+    static void updateFilter(Biquad& filter, FilterKey& key,
+                             BiquadCoeffs (*design)(double, double, double, double), double sampleRate,
+                             float hz, float q, float gainDb) noexcept;
+
+    // Un campione della catena; Sat e Noise scelgono a compile time se saturazione e rumore sono attivi.
+    template <bool Sat, bool Noise> float tick(float x) noexcept;
+    template <bool Sat, bool Noise>
+    void addBlock(const float* in, float* acc, int n, float w0, float w1) noexcept;
+
     double sampleRate_ = 48000.0;
     Biquad lowShelf_, bell_, highShelf_;
+    FilterKey lowKey_, bellKey_, highKey_;
     float apCoeff_ = 1.0f, apState_ = 0.0f; // allpass del primo ordine; a = 1 -> identità
     float gain_ = 1.0f;
     float drive_ = 1.0f;    // k; 1 -> saturazione saltata
-    float noiseAmp_ = 0.0f; // ampiezza del rumore bianco prima del passa-basso
+    float satMix_ = 0.0f;   // m = clamp(k - 1, 0, 1): miscela tra y e tanh(k y) / k
+    float noiseAmp_ = 0.0f; // ampiezza del rumore bianco prima del passa-basso (compensata)
     float noiseLpCoeff_ = 0.0f, noiseLpState_ = 0.0f;
     std::uint32_t noiseSeed_ = 1u;
     Xorshift32 noise_;
