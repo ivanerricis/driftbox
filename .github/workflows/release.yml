@@ -5,7 +5,6 @@ name: release
 on:
   push:
     tags: ['v*']
-    branches: [ci/release-packaging]
   workflow_dispatch:
     inputs:
       version:
@@ -28,7 +27,7 @@ jobs:
       - id: v
         name: Tag must match CMake project version
         env:
-          VERSION: ${{ github.ref_type == 'tag' && github.ref_name || inputs.version || 'v0.1.0-rc1' }}
+          VERSION: ${{ github.ref_type == 'tag' && github.ref_name || inputs.version }}
         run: |
           scripts/ci/check_version.sh "$VERSION"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
