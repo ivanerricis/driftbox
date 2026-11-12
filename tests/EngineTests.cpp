@@ -134,9 +134,9 @@ TEST_CASE("Engine weights: per-side sum is 1 during every N change, final weight
     step(3);
     checkFinalWeights(e, 2);
 
-    // 2 -> 16, lasciando finire la rampa (30 ms = 45 sotto-blocchi a 48 kHz).
+    // 2 -> 16, lasciando finire la rampa (50 ms = 75 sotto-blocchi a 48 kHz).
     e.setSettings(makeSettings(16, 0.5f));
-    step(60);
+    step(80);
     checkFinalWeights(e, 16);
 
     // 16 -> 4 interrotto dopo 10 sotto-blocchi da 4 -> 8, poi 8 -> 2 a rampa ancora in corso, infine 2 -> 16.
@@ -146,20 +146,20 @@ TEST_CASE("Engine weights: per-side sum is 1 during every N change, final weight
     e.setSettings(makeSettings(8, 0.5f));
     step(7);
     e.setSettings(makeSettings(2, 0.5f));
-    step(60);
+    step(80);
     checkFinalWeights(e, 2);
 
     e.setSettings(makeSettings(16, 0.5f));
     step(2);
     e.setSettings(makeSettings(2, 0.5f)); // ritorno a rampa appena iniziata
-    step(60);
+    step(80);
     checkFinalWeights(e, 2);
 
     // Le voci oltre N pesano 0 anche per N = 4 e 8.
     for (int n : {4, 8})
     {
         e.setSettings(makeSettings(n, 0.5f));
-        step(60);
+        step(80);
         checkFinalWeights(e, n);
         for (int v = n; v < kMaxVoices; ++v)
         {
@@ -209,7 +209,7 @@ TEST_CASE("Engine mono: odd voices stay at weight 0 and the output is finite", "
 
     // Cambio di N in mono: le voci dispari restano a 0 durante tutta la rampa.
     e.setSettings(makeSettings(16, 1.0f));
-    for (int b = 0; b < 60; ++b)
+    for (int b = 0; b < 80; ++b)
     {
         float* chans[1] = {x.data()};
         juce::AudioBuffer<float> buf(chans, 1, 32);
@@ -373,7 +373,7 @@ TEST_CASE("Engine noise floor is about -84 dBFS RMS, independent of N", "[engine
     // direttamente in uscita, quindi si stampa il caso peggiore.
     for (int voices : {2, 4, 8, 16})
     {
-        double worstDev = 0.0;
+        double worstDev = 0.0, sumDb = 0.0;
         for (std::uint64_t seed = 1; seed <= 30; ++seed)
         {
             DriftEngine e;
@@ -381,13 +381,17 @@ TEST_CASE("Engine noise floor is about -84 dBFS RMS, independent of N", "[engine
             e.setSettings(makeSettings(voices, 1.0f, 1.0f, 0.0f, 1.0f));
             Signal l(48000, 0.0f), r(48000, 0.0f);
             runStereo(e, l, r, 512);
-            worstDev = std::max(
-                {worstDev, std::fabs(toDb(rms(l, 4800)) + 84.0), std::fabs(toDb(rms(r, 4800)) + 84.0)});
+            const double dbL = toDb(rms(l, 4800)), dbR = toDb(rms(r, 4800));
+            worstDev = std::max({worstDev, std::fabs(dbL + 84.0), std::fabs(dbR + 84.0)});
+            sumDb += dbL + dbR;
         }
+        const double meanDb = sumDb / 60.0;
         std::printf(
-            "[engine] noise N=%2d: worst |deviation from -84 dBFS| over 30 seeds (L and R) = %.2f dB\n",
-            voices, worstDev);
-        CHECK(worstDev <= 1.0);
+            "[engine] noise N=%2d: mean %.2f dBFS, worst |dev from -84| %.2f dB (30 seeds, L and R)\n",
+            voices, meanDb, worstDev);
+        // Ogni seed e lato entro lo scarto voluto tra le voci piu' 0.5 dB; la media non dipende da N.
+        CHECK(worstDev <= static_cast<double>(limits::kNoiseSpreadDb) + 0.5);
+        CHECK(std::fabs(meanDb + 84.0) <= 0.5);
     }
 }
 
@@ -410,39 +414,67 @@ TEST_CASE("Engine produces L/R differences with Drift > 0 and identical input", 
     }
 }
 
-TEST_CASE("Engine summed response stays within the per-voice bound at 100 %", "[engine]")
+namespace
 {
-    // Limite superiore: somma dei massimi di EQ di una sola voce (1 + 0.75 + 1 dB); la media di piu' voci
-    // non puo' superarlo. Con il guadagno (+-1 dB) il massimo teorico di una voce sarebbe 3.75 dB.
-    constexpr double kUpperBoundDb = 2.75;
+// Peggior scostamento (dB) della risposta sommata, per lato, tra 20 Hz e 10 kHz, su `seeds` seed.
+double worstSummedResponseDb(int voices, float freqTol, float phaseTol, float gainTol, int seeds)
+{
     const int len = 16384;
-    for (int voices : {2, 4, 8, 16})
+    double worstDb = 0.0;
+    for (int seed = 1; seed <= seeds; ++seed)
     {
-        double worstDb = 0.0;
-        for (std::uint64_t seed = 1; seed <= 40; ++seed)
+        DriftEngine e;
+        prepareEngine(e, 2, kSr, static_cast<std::uint64_t>(seed) * 7919u);
+        EngineSettings s = makeSettings(voices, 1.0f);
+        s.freqTol01 = freqTol;
+        s.phaseTol01 = phaseTol;
+        s.gainTol01 = gainTol;
+        e.setSettings(s);
+        Signal l = impulse(static_cast<size_t>(len), 0, 0.5f), r = l;
+        runStereo(e, l, r, len);
+        for (const Signal* ir : {&l, &r})
         {
-            DriftEngine e;
-            prepareEngine(e, 2, kSr, seed * 7919u);
-            e.setSettings(makeSettings(voices, 1.0f));
-            Signal l = impulse(static_cast<size_t>(len), 0, 0.5f), r = l;
-            runStereo(e, l, r, len);
-            for (const Signal* ir : {&l, &r})
+            Signal scaled = *ir;
+            for (auto& v : scaled)
             {
-                Signal scaled = *ir;
-                for (auto& v : scaled)
-                {
-                    v *= 2.0f; // impulso di ampiezza 0.5
-                }
-                for (int k = 0; k <= 60; ++k)
-                {
-                    const double hz = 20.0 * std::pow(500.0, k / 60.0); // 20 Hz .. 10 kHz
-                    worstDb = std::max(worstDb, std::fabs(responseDb(scaled, kSr, hz)));
-                }
+                v *= 2.0f; // impulso di ampiezza 0.5
+            }
+            for (int k = 0; k <= 60; ++k)
+            {
+                const double hz = 20.0 * std::pow(500.0, k / 60.0); // 20 Hz .. 10 kHz
+                worstDb = std::max(worstDb, std::fabs(responseDb(scaled, kSr, hz)));
             }
         }
-        std::printf("[engine] summed response N=%2d, 40 seeds, 20 Hz..10 kHz: max |dev| = %.3f dB\n", voices,
-                    worstDb);
-        CHECK(worstDb <= kUpperBoundDb);
+    }
+    return worstDb;
+}
+} // namespace
+
+TEST_CASE("Engine phase-only response has no cancellations (within 0.5 dB)", "[engine]")
+{
+    // Solo ritardi di fase (freq = gain = 0): la media di voci con ritardi diversi non deve cancellare.
+    for (int voices : {2, 4, 8, 16})
+    {
+        const double worst = worstSummedResponseDb(voices, 0.0f, 1.0f, 0.0f, 30);
+        std::printf("[engine] phase-only response N=%2d, 30 seeds, 20 Hz..10 kHz: max |dev| = %.4f dB\n",
+                    voices, worst);
+        CHECK(worst <= 0.5);
+    }
+}
+
+TEST_CASE("Engine summed response with everything at 100 % stays within the per-voice maximum", "[engine]")
+{
+    // Limite superiore: massimo teorico di una singola voce = 2 x kMaxShelfDb + kMaxBellDb + kMaxGainDb
+    // = 3.75 dB; la media di piu' voci non puo' superarlo.
+    constexpr double kUpperBoundDb = 2.0 * limits::kMaxShelfDb + limits::kMaxBellDb + limits::kMaxGainDb;
+    for (int voices : {2, 4, 8, 16})
+    {
+        const double worst = worstSummedResponseDb(voices, 1.0f, 1.0f, 1.0f, 40);
+        std::printf(
+            "[engine] full response N=%2d, 40 seeds, 20 Hz..10 kHz: max |dev| = %.3f dB (bound %.2f)\n",
+            voices, worst, kUpperBoundDb);
+        INFO("N = " << voices << ", measured max deviation " << worst << " dB");
+        CHECK(worst <= kUpperBoundDb);
     }
 }
 

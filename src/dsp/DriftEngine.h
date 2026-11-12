@@ -33,7 +33,7 @@ class DriftEngine
 {
 public:
     static constexpr int kControlInterval = 32; // campioni tra due aggiornamenti dei coefficienti
-    static constexpr double kVoiceRampSeconds = 0.030;
+    static constexpr double kVoiceRampSeconds = 0.050;
     static constexpr double kProfileFadeSeconds = 0.250;
     static constexpr double kBypassFadeSeconds = 0.020;
     static constexpr double kGainSmoothSeconds = 0.020;  // Output Gain

@@ -267,16 +267,21 @@ TEST_CASE("Acceptance: fuzzed parameters and block sizes never produce NaN or In
         float* chans[2] = {l.data(), r.data()};
         juce::AudioBuffer<float> buf(chans, 2, n);
         e.process(buf);
-        // In bypass l'uscita e' l'ingresso sanitizzato (fino a +-kSanitizeLimit), altrimenti |y| <= 1.
+        // In bypass il dry e' esattamente sanitize(in): un ingresso 1e30 esce come kSanitizeLimit (1e6),
+        // quindi |y| <= 1 vale solo senza bypass. Nei blocchi con bypass o corrotti il limite e'
+        // kSanitizeLimit.
         const double bound = (s.bypass || corrupt) ? static_cast<double>(kSanitizeLimit) : 1.0;
+        bool finite = true;
+        double peak = 0.0;
         for (int i = 0; i < n; ++i)
         {
             const auto k = static_cast<size_t>(i);
-            REQUIRE(std::isfinite(l[k]));
-            REQUIRE(std::isfinite(r[k]));
-            REQUIRE(std::fabs(static_cast<double>(l[k])) <= bound);
-            REQUIRE(std::fabs(static_cast<double>(r[k])) <= bound);
+            finite = finite && std::isfinite(l[k]) && std::isfinite(r[k]);
+            peak =
+                std::max({peak, std::fabs(static_cast<double>(l[k])), std::fabs(static_cast<double>(r[k]))});
         }
+        REQUIRE(finite);
+        REQUIRE(peak <= bound);
     }
 }
 
@@ -336,22 +341,28 @@ TEST_CASE("Acceptance: voice count changes are click-free", "[acceptance]")
     const double sr = 48000.0;
     const size_t total = 60000;
     const size_t window = 240; // 5 ms
+    const size_t rampLen = static_cast<size_t>(sr * DriftEngine::kVoiceRampSeconds);
     const test::Signal in = test::sine(total, 1000.0, sr, 0.501187f);
 
-    // Sequenza 2 -> 16 -> 4 -> 8 -> 2, con cambi a rampa in corso (la rampa dura 1440 campioni).
+    // Sequenza 2 -> 16 -> 4 -> 8 -> 2, con cambi a rampa in corso.
     struct Change
     {
         size_t at;
-        int voices;
+        int before, after;
     };
-    const Change changes[] = {{12000, 16}, {24000, 4}, {24500, 8}, {36000, 2}, {36300, 16}, {36600, 2}};
+    const Change changes[] = {{12000, 2, 16}, {24000, 16, 4}, {24500, 4, 8},
+                              {36000, 8, 2},  {36300, 2, 16}, {36600, 16, 2}};
+    // Cambi con rampa completa (il successivo arriva dopo la fine): qui si controlla il livello finale.
+    const size_t completeAt[] = {12000, 24500, 36600};
 
     // Più seed: ogni N ha un livello medio diverso a 1 kHz (le tolleranze delle singole voci).
-    double worstRatio = 0.0, worstStepDb = 0.0;
+    double worstRatio = 0.0, worstStepRatio = 0.0, worstEndDb = 0.0;
     for (std::uint64_t seed = 1; seed <= 30; ++seed)
     {
-        // Delta massimo a regime: il peggiore tra le quattro configurazioni a regime.
-        double steady = 0.0;
+        INFO("seed " << seed);
+        // Regime di ogni N: delta massimo e livello RMS (dB) per lato.
+        double steadyDelta = 0.0;
+        double steadyDb[17][2] = {};
         for (int voices : {2, 4, 8, 16})
         {
             DriftEngine e;
@@ -359,35 +370,69 @@ TEST_CASE("Acceptance: voice count changes are click-free", "[acceptance]")
             e.setSettings(makeSettings(voices, 1.0f));
             test::Signal l = in, r = in;
             runStereo(e, l, r, 0, total, 256);
-            steady = std::max({steady, maxDelta(l, 9600, total), maxDelta(r, 9600, total)});
+            steadyDelta = std::max({steadyDelta, maxDelta(l, 9600, total), maxDelta(r, 9600, total)});
+            steadyDb[voices][0] = test::toDb(test::rms(l, total - 4800, total));
+            steadyDb[voices][1] = test::toDb(test::rms(r, total - 4800, total));
         }
 
         DriftEngine e;
         prepareEngine(e, sr, seed);
         e.setSettings(makeSettings(2, 1.0f));
-        test::Signal l = in, r = in;
+        test::Signal out[2] = {in, in};
         size_t pos = 0;
         for (const auto& c : changes)
         {
-            runStereo(e, l, r, pos, c.at, 64);
+            runStereo(e, out[0], out[1], pos, c.at, 64);
             pos = c.at;
-            e.setSettings(makeSettings(c.voices, 1.0f));
+            e.setSettings(makeSettings(c.after, 1.0f));
         }
-        runStereo(e, l, r, pos, total, 64);
+        runStereo(e, out[0], out[1], pos, total, 64);
 
-        const double during = std::max(maxDelta(l, 12000, total), maxDelta(r, 12000, total));
-        const double stepDb =
-            std::max(maxRmsStepDb(l, 9600, total, window), maxRmsStepDb(r, 9600, total, window));
-        worstRatio = std::max(worstRatio, (during - 1.0e-4) / steady);
-        worstStepDb = std::max(worstStepDb, stepDb);
-        INFO("seed " << seed);
-        CHECK(during <= 1.05 * steady + 1.0e-4);
-        CHECK(stepDb <= 0.1);
+        const double during = std::max(maxDelta(out[0], 12000, total), maxDelta(out[1], 12000, total));
+        worstRatio = std::max(worstRatio, (during - 1.0e-4) / steadyDelta);
+        CHECK(during <= 1.05 * steadyDelta + 1.0e-4);
+
+        for (int side = 0; side < 2; ++side)
+        {
+            const auto& y = out[side];
+            // Coppie di finestre consecutive da 5 ms: variazione massima ammessa durante una rampa.
+            for (size_t w = 9600; w + 2 * window <= total; w += window)
+            {
+                double allowed = 0.1;
+                for (const auto& c : changes)
+                {
+                    if (w < c.at + rampLen + window && w + 2 * window > c.at)
+                    {
+                        const double dL = std::fabs(steadyDb[c.after][side] - steadyDb[c.before][side]);
+                        allowed = std::max(allowed, 1.5 * dL * (static_cast<double>(window) / rampLen));
+                    }
+                }
+                const double step = std::fabs(test::toDb(test::rms(y, w + window, w + 2 * window)) -
+                                              test::toDb(test::rms(y, w, w + window)));
+                worstStepRatio = std::max(worstStepRatio, step / allowed);
+                if (step > allowed)
+                {
+                    FAIL_CHECK("RMS step " << step << " dB > " << allowed << " dB at sample " << w);
+                }
+            }
+            // A fine rampa il livello coincide con quello di regime della nuova configurazione.
+            for (const auto& c : changes)
+            {
+                if (std::find(std::begin(completeAt), std::end(completeAt), c.at) == std::end(completeAt))
+                {
+                    continue;
+                }
+                const size_t from = c.at + rampLen + window;
+                const double dev =
+                    std::fabs(test::toDb(test::rms(y, from, from + window)) - steadyDb[c.after][side]);
+                worstEndDb = std::max(worstEndDb, dev);
+                CHECK(dev <= 0.05);
+            }
+        }
     }
-    std::printf(
-        "[acceptance] voice changes, 30 seeds: worst delta ratio %.4f (limit 1.05), worst RMS step %.4f dB "
-        "(limit 0.1)\n",
-        worstRatio, worstStepDb);
+    std::printf("[acceptance] voice changes, 30 seeds: worst delta ratio %.4f (limit 1.05), worst RMS step / "
+                "allowed %.3f (limit 1), worst end-of-ramp level error %.4f dB (limit 0.05)\n",
+                worstRatio, worstStepRatio, worstEndDb);
 }
 
 TEST_CASE("Acceptance: Randomize is click-free", "[acceptance]")
