@@ -182,7 +182,7 @@ Init is the plugin defaults with Drift at 0 % (transparent). The others are the 
   inter-process lock, and a missing or unreadable file gives the defaults (the file is created on the first change, not by
   reading). Message thread only; it broadcasts a synchronous change message.
 - Settings: `uiZoom` (75/100/125/150/200 %, default 100), `tooltips` (default on), `showCpu` (default on),
-  `presetFolder` (empty = platform default). They never enter the project state or a preset.
+  `presetFolder` (empty = platform default), `checkUpdates` (default on). They never enter the project state or a preset.
 - Zoom: a change resizes every open editor (`setZoom()`); a new editor uses it only when the processor state has no
   saved size (`hasStoredUiSize()`), otherwise the saved size of the project wins. Other changes (tooltips, CPU) do
   not resize.
@@ -194,8 +194,33 @@ Init is the plugin defaults with Drift at 0 % (transparent). The others are the 
 The settings modal, the preset list, the actions menu and the Save As / Delete dialog are components inside
 `content()` (they scale with the editor and can be snapshotted), not native windows: no modal loops, and a click or
 key never reaches the controls below. They are hidden at once and destroyed on the next message-loop turn. The
-folder chooser is the only native dialog (`FileChooser::launchAsync`). `SettingsPanel::updatesSection()` is a hidden
-placeholder where T8b adds the update-check row.
+folder chooser is the only native dialog (`FileChooser::launchAsync`). The "Updates" row of the settings
+modal is `SettingsPanel::updatesSection()` (see "Update check" below).
+
+## Update check
+
+- **What is sent**: one plain `GET https://api.github.com/repos/ivanerricis/driftbox/releases` with a single header,
+  `User-Agent: Driftbox/<plugin version>`. No query string, no body, no cookies, and no user name, e-mail, machine id or
+  project data. The plugin version is public information. GitHub sees the usual network metadata (the IP address).
+- **What it does**: the response is the release list. Drafts are skipped, pre-releases are included, and the highest
+  version by semver wins (`0.1.0-rc1 < 0.1.0-rc2 < 0.1.0`; the numeric tail of an `rcN` identifier is compared as a
+  number, so `rc2 < rc10`). Tags that are not valid versions and links outside `https://github.com/ivanerricis/driftbox/`
+  are ignored. If the winner is newer than the running version, the settings row says "Version X available" and shows a
+  "Download" link that opens the release page in the default browser. The plugin never downloads or installs anything.
+- **How often**: it is on by default. An editor checks when it opens, at most once every 24 hours: the time of the last
+  automatic check is stored in the settings file (`lastUpdateCheck`), so all instances and processes share it. A failed
+  check also counts, so a broken network does not cause a retry on every editor open. "Check now" always checks and
+  does not change that schedule.
+- **How to disable it**: Settings, Updates, switch off "Check for updates" (stored as `checkUpdates=false`; "Reset
+  settings" turns it back on). With the switch off nothing is sent unless you press "Check now".
+- **Platforms**: Windows and macOS use JUCE's native HTTP client. Linux builds have no HTTP backend, so the row is shown
+  disabled with "Not available on Linux".
+- **Threads**: the request runs on a background `juce::Thread` with a 5 s connection timeout, never on the audio thread
+  and never on the message thread. The result is posted back with `MessageManager::callAsync`, guarded by a
+  `WeakReference` to the checker (a result arriving after destruction is dropped). The checker lives in the shared
+  `SettingsManager`, which broadcasts `updateChanges()`; the settings panel listens to it and removes itself on destruction.
+- **Tests** inject the fetch function (`SettingsManager::setUpdateFetcherOverride`) and the clock
+  (`setClockOverride`); `tests/TestMain.cpp` installs a fetcher that fails immediately, so no test opens a connection.
 
 ## Build notes
 

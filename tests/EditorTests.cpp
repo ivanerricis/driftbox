@@ -474,7 +474,7 @@ TEST_CASE("Settings modal opens from the gear and closes with DONE, the X and Es
     CHECK(panel->versionText() == juce::String("Driftbox ") + info::kVersion);
     CHECK(panel->sourceLink().getTooltip() == "https://github.com/ivanerricis/driftbox");
     CHECK(panel->card().getWidth() == 460);
-    CHECK_FALSE(panel->updatesSection().isVisible()); // T8b
+    CHECK(panel->updatesSection().isVisible());
 
     // Un secondo clic sull'ingranaggio non apre un'altra finestra.
     editor.getTopBar().settingsButton().onClick();

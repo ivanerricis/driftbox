@@ -26,9 +26,38 @@ public:
     LinkButton(const juce::String& text, const juce::String& url);
     void paintButton(juce::Graphics&, bool highlighted, bool down) override;
     const juce::String& url() const noexcept { return url_; }
+    void setUrl(const juce::String& url) { url_ = url; }
 
 private:
     juce::String url_;
+};
+
+// Riga "Updates" della finestra delle impostazioni (mockup: titolo e stato a sinistra; a destra "Check now" e
+// l'interruttore). Quando c'è una versione nuova compare anche il collegamento "Download". Non fa rete né
+// legge le impostazioni: la riempie SettingsPanel (setState) e le callback le collega SettingsPanel.
+class UpdatesSection final : public juce::Component
+{
+public:
+    UpdatesSection();
+
+    // Stato mostrato: testo sotto il titolo, interruttore, e (se `downloadUrl` non è vuoto) il link
+    // "Download". `enabled` = false su Linux: i controlli sono disattivati.
+    void setState(const juce::String& status, bool autoCheck, const juce::String& downloadUrl, bool enabled,
+                  bool busy);
+    const juce::String& statusText() const noexcept { return status_; }
+
+    ToggleSwitch& toggle() noexcept { return toggle_; }
+    PillButton& checkNowButton() noexcept { return checkNow_; }
+    LinkButton& downloadLink() noexcept { return download_; }
+
+    void paint(juce::Graphics&) override;
+    void resized() override;
+
+private:
+    juce::String status_;
+    ToggleSwitch toggle_{"Check for updates"};
+    PillButton checkNow_{"Check now", "Look for a newer release now"};
+    LinkButton download_{"Download", {}};
 };
 
 // Selettore a segmenti dello zoom: 75 / 100 / 125 / 150 / 200 %.
@@ -89,10 +118,9 @@ public:
     // percorso).
     juce::String folderText() const;
 
-    // T8b: la sezione "Updates" (Check for updates / Check now / interruttore) va qui, tra la cartella dei
-    // preset e le informazioni. Per ora è nascosta e non occupa spazio; basta renderla visibile (e
-    // aggiungerle i controlli) perché la scheda si allarghi di una riga (kRowH) e la disponga.
-    juce::Component& updatesSection() noexcept { return updatesSection_; }
+    // Sezione "Updates" (Check for updates / Check now / interruttore), tra la cartella dei preset e le
+    // informazioni. Si aggiorna quando cambiano le impostazioni o lo stato del controllo.
+    UpdatesSection& updatesSection() noexcept { return updatesSection_; }
     void updateLayout(); // da chiamare dopo aver mostrato o nascosto updatesSection()
 
     void paint(juce::Graphics&) override;
@@ -102,6 +130,7 @@ private:
     void changeListenerCallback(juce::ChangeBroadcaster*) override;
     void timerCallback() override;
     void syncFromSettings();
+    void syncUpdates();
     void applyChange(const std::function<void(UserSettings&)>& edit);
     void chooseFolder();
     int cardHeight() const;
@@ -113,8 +142,8 @@ private:
     ZoomSelector zoom_;
     ToggleSwitch tooltips_{"Tooltips"};
     ToggleSwitch cpu_{"Show CPU"};
-    PillButton changeFolder_; // "Change..." (inizializzato nel costruttore: ha il carattere di ellissi)
-    juce::Component updatesSection_; // vedi updatesSection()
+    PillButton changeFolder_;       // "Change..." (inizializzato nel costruttore: ha il carattere di ellissi)
+    UpdatesSection updatesSection_; // vedi updatesSection()
     LinkButton source_;
     PillButton copyDebug_{"Copy debug info", "Copy the plugin and host details to the clipboard"};
     PillButton reset_{"Reset settings", "Restore every setting to its default"};
