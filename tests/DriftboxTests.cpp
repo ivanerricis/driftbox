@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Test di accettazione di Driftbox: trasparenza, niente NaN/Inf, cambio canali senza click e niente
-// clipping (T3). Il test di stato (round trip e uscita bit-identica) arriva con T4.
+// clipping (T3), stato e seed (T4).
 #include "PluginProcessor.h"
 #include "dsp/DriftEngine.h"
 #include "dsp/DspUtils.h"
@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 #include <random>
 #include <utility>
@@ -528,4 +529,160 @@ TEST_CASE("Acceptance: -6 dBFS with Output 0 dB and Drift at maximum does not en
     }
     std::printf("[acceptance] -6 dBFS input, Drift max: peak %.4f\n", peak);
     CHECK(peak < 0.891);
+}
+
+namespace
+{
+constexpr double kStateSr = 48000.0;
+constexpr int kStateBlock = 480;
+
+// Parametri del test di stato: Drift 100 %, Noise 100 %, Saturation 50 %, 8 voci.
+void configureForStateTest(DriftboxAudioProcessor& p)
+{
+    auto set = [&p](const char* id, float value)
+    {
+        auto* param = p.getAPVTS().getParameter(id);
+        param->setValueNotifyingHost(param->convertTo0to1(value));
+    };
+    set(pid::channels, 2.0f); // indice 2: 8 voci
+    set(pid::drift, 1.0f);
+    set(pid::noise, 1.0f);
+    set(pid::saturation, 0.5f);
+}
+
+void prepareForStateTest(DriftboxAudioProcessor& p)
+{
+    p.setPlayConfigDetails(2, 2, kStateSr, kStateBlock);
+    p.prepareToPlay(kStateSr, kStateBlock);
+}
+
+struct StereoOut
+{
+    test::Signal l, r;
+};
+
+// Elabora il tratto [from, to) dell'ingresso stereo a blocchi di kStateBlock campioni.
+StereoOut runProcessor(DriftboxAudioProcessor& p, const test::Signal& inL, const test::Signal& inR,
+                       size_t from, size_t to)
+{
+    StereoOut out;
+    juce::MidiBuffer midi;
+    for (size_t pos = from; pos < to; pos += kStateBlock)
+    {
+        const int n = static_cast<int>(std::min(static_cast<size_t>(kStateBlock), to - pos));
+        juce::AudioBuffer<float> buf(2, n);
+        buf.copyFrom(0, 0, inL.data() + pos, n);
+        buf.copyFrom(1, 0, inR.data() + pos, n);
+        p.processBlock(buf, midi);
+        out.l.insert(out.l.end(), buf.getReadPointer(0), buf.getReadPointer(0) + n);
+        out.r.insert(out.r.end(), buf.getReadPointer(1), buf.getReadPointer(1) + n);
+    }
+    return out;
+}
+
+bool bitIdentical(const test::Signal& a, const test::Signal& b)
+{
+    return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * sizeof(float)) == 0;
+}
+
+double maxDiff(const test::Signal& a, const test::Signal& b)
+{
+    double m = 0.0;
+    for (size_t i = 0; i < std::min(a.size(), b.size()); ++i)
+    {
+        m = std::max(m, static_cast<double>(std::fabs(a[i] - b[i])));
+    }
+    return m;
+}
+} // namespace
+
+TEST_CASE("Acceptance: a restored state sounds identical from the first sample", "[acceptance][state]")
+{
+    const size_t len = static_cast<size_t>(kStateSr); // 1 s
+    const test::Signal inL = test::noise(len, 501u, 0.5f), inR = test::noise(len, 502u, 0.5f);
+
+    // Istanza A: configurata, elabora 1 s di rumore, poi salva lo stato.
+    DriftboxAudioProcessor a;
+    configureForStateTest(a);
+    prepareForStateTest(a);
+    runProcessor(a, inL, inR, 0, len);
+    juce::MemoryBlock state;
+    a.getStateInformation(state);
+
+    // B: nuova istanza, prepareToPlay PRIMA e stato DOPO (il seed arriva a playback pronto).
+    DriftboxAudioProcessor b;
+    prepareForStateTest(b);
+    b.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+    REQUIRE(b.getSeed() == a.getSeed());
+    CHECK(b.getAPVTS().getRawParameterValue(pid::drift)->load() == Approx(1.0f));
+    const auto outB = runProcessor(b, inL, inR, 0, len);
+
+    // A2: ricreata da zero dallo stesso stato (stato PRIMA, prepareToPlay DOPO).
+    DriftboxAudioProcessor a2;
+    a2.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+    prepareForStateTest(a2);
+    const auto outA2 = runProcessor(a2, inL, inR, 0, len);
+
+    CHECK(bitIdentical(outB.l, outA2.l));
+    CHECK(bitIdentical(outB.r, outA2.r));
+
+    // Il segnale è davvero elaborato e finito, e il seed conta: un'altra istanza con lo stesso stato ma
+    // un seed diverso suona diversa.
+    CHECK(maxDiff(outB.l, inL) > 1.0e-3);
+    for (size_t i = 0; i < len; ++i)
+    {
+        REQUIRE(std::isfinite(outB.l[i]));
+        REQUIRE(std::isfinite(outB.r[i]));
+    }
+    DriftboxAudioProcessor other;
+    other.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+    other.setSeed(a.getSeed() ^ 0x5555555555555555ULL);
+    prepareForStateTest(other);
+    const auto outOther = runProcessor(other, inL, inR, 0, len);
+    CHECK(maxDiff(outOther.l, outB.l) > 1.0e-3);
+}
+
+TEST_CASE("Acceptance: a state restored during playback applies the seed without a crossfade",
+          "[acceptance][state]")
+{
+    const size_t warm = 24 * kStateBlock, len = warm + kStateBlock;
+    const test::Signal inL = test::noise(len, 601u, 0.5f), inR = test::noise(len, 602u, 0.5f);
+
+    DriftboxAudioProcessor src;
+    configureForStateTest(src);
+    juce::MemoryBlock state;
+    src.getStateInformation(state);
+
+    // Istanza in riproduzione con gli stessi parametri ma un altro seed; poi arriva lo stato.
+    auto makePlaying = [&](DriftboxAudioProcessor& p)
+    {
+        configureForStateTest(p);
+        p.setSeed(src.getSeed() ^ 0xa5a5a5a5a5a5a5a5ULL);
+        prepareForStateTest(p);
+        runProcessor(p, inL, inR, 0, warm);
+    };
+
+    DriftboxAudioProcessor playing;
+    makePlaying(playing);
+    playing.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+    REQUIRE(playing.getSeed() == src.getSeed());
+    const auto got = runProcessor(playing, inL, inR, warm, len);
+
+    // Riferimento: istanza preparata da zero con quello stato, con lo stesso ingresso del blocco successivo.
+    DriftboxAudioProcessor freshSame;
+    freshSame.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+    prepareForStateTest(freshSame);
+    test::Signal subL(inL.begin() + static_cast<std::ptrdiff_t>(warm), inL.end());
+    test::Signal subR(inR.begin() + static_cast<std::ptrdiff_t>(warm), inR.end());
+    const auto want = runProcessor(freshSame, subL, subR, 0, kStateBlock);
+    const double snapDiff = std::max(maxDiff(got.l, want.l), maxDiff(got.r, want.r));
+    std::printf("[acceptance] snap restore: max |playing - fresh| = %.3g\n", snapDiff);
+    CHECK(snapDiff < 1.0e-5);
+
+    // Controllo negativo: con un crossfade (seed impostato a mano) l'uscita sarebbe ben diversa.
+    DriftboxAudioProcessor faded;
+    makePlaying(faded);
+    faded.setSeed(src.getSeed());
+    const auto fadedOut = runProcessor(faded, inL, inR, warm, len);
+    CHECK(std::max(maxDiff(fadedOut.l, want.l), maxDiff(fadedOut.r, want.r)) > 10.0 * snapDiff + 1.0e-4);
 }
