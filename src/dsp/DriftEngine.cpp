@@ -12,6 +12,9 @@ namespace
 // diventerebbe mai trasparente.
 constexpr float kSnapDistance = 1.0e-6f;
 
+// Output Gain sotto questa soglia (metà del passo di 0.1 dB del parametro) vale esattamente 0 dB.
+constexpr float kUnityGainDb = 0.05f;
+
 // Valore finito limitato a [lo, hi]; un NaN diventa lo.
 float finiteClamp(float v, float lo, float hi) noexcept
 {
@@ -244,8 +247,10 @@ void DriftEngine::processChunk(float* const* ch, int numCh, int n) noexcept
     const bool wetNeeded = mix0 > 0.0f || mix1 > 0.0f;
 
     // --- Output Gain: smussato, esattamente 1 a 0 dB ---
-    const float gainTarget =
-        settings_.outGainDb == 0.0f ? 1.0f : dbToGain(finiteClamp(settings_.outGainDb, -100.0f, 48.0f));
+    // Il parametro ha passo 0.1 dB, ma il suo valore "0 dB" può arrivare come 3.6e-7 per arrotondamenti del
+    // range normalizzato (visto su macOS): sotto metà del passo vale esattamente guadagno unitario.
+    const float gainDb = finiteClamp(settings_.outGainDb, -100.0f, 48.0f);
+    const float gainTarget = std::fabs(gainDb) < kUnityGainDb ? 1.0f : dbToGain(gainDb);
     if (fresh_)
     {
         outGain_ = gainTarget;
