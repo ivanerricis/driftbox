@@ -18,7 +18,7 @@ int main(int argc, char* argv[])
     // Nessun test fa richieste di rete vere: il controllo degli aggiornamenti (attivo di default) fallisce
     // subito, senza connettersi.
     driftbox::SettingsManager::setUpdateFetcherOverride(
-        []
+        [](driftbox::update::CancelToken&)
         {
             driftbox::update::FetchOutcome o;
             o.error = "network disabled in tests";

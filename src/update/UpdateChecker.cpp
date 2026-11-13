@@ -3,6 +3,7 @@
 
 #include "PluginInfo.h"
 #include <juce_events/juce_events.h>
+#include <chrono>
 #include <mutex>
 
 namespace driftbox::update
@@ -271,24 +272,80 @@ UpdateResult evaluate(const FetchOutcome& response, const juce::String& currentV
     return out;
 }
 
-FetchOutcome fetchReleases()
+void CancelToken::cancel()
+{
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        cancelled_.store(true);
+        if (stream_ != nullptr)
+        {
+            stream_->cancel(); // sotto il mutex: detach() non può far morire lo stream mentre lo annulliamo
+        }
+    }
+    cv_.notify_all();
+}
+
+bool CancelToken::waitForCancel(int timeoutMs) const
+{
+    std::unique_lock<std::mutex> lock(mutex_);
+    return cv_.wait_for(lock, std::chrono::milliseconds(timeoutMs), [this] { return cancelled_.load(); });
+}
+
+bool CancelToken::attach(juce::WebInputStream* stream)
+{
+    const std::lock_guard<std::mutex> lock(mutex_);
+    if (cancelled_.load())
+    {
+        if (stream != nullptr)
+        {
+            stream->cancel(); // uno stream nato dopo l'annullamento non deve mai connettersi
+        }
+        return false;
+    }
+    stream_ = stream;
+    return true;
+}
+
+void CancelToken::detach()
+{
+    const std::lock_guard<std::mutex> lock(mutex_);
+    stream_ = nullptr;
+}
+
+FetchOutcome fetchReleases([[maybe_unused]] CancelToken& token)
 {
     FetchOutcome out;
 #if JUCE_WINDOWS || JUCE_MAC
-    int status = 0;
     // Nessun parametro, nessun dato POST: l'unica intestazione è lo User-Agent che GitHub richiede
     // ("Driftbox/<versione>": nessun nome utente, e-mail o identificativo della macchina).
     const auto userAgent = "User-Agent: Driftbox/" + juce::String(info::kVersion) + "\r\n";
-    auto stream =
-        juce::URL(kReleasesApiUrl)
-            .createInputStream(juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inAddress)
-                                   .withExtraHeaders(userAgent)
-                                   .withConnectionTimeoutMs(kTimeoutMs)
-                                   .withNumRedirectsToFollow(2)
-                                   .withStatusCode(&status));
-    if (stream == nullptr)
+    juce::WebInputStream stream(juce::URL(kReleasesApiUrl), false);
+    stream.withExtraHeaders(userAgent).withConnectionTimeout(kTimeoutMs).withNumRedirectsToFollow(2);
+
+    // Lo stream è registrato nel token per poterlo interrompere da un altro thread; il guard lo toglie
+    // prima che venga distrutto.
+    struct Registration
     {
-        out.ok = status > 0; // uno stato HTTP di errore (JUCE non dà uno stream per 4xx/5xx)
+        CancelToken& t;
+        ~Registration() { t.detach(); }
+    } registration{token};
+    if (!token.attach(&stream))
+    {
+        out.error = "Cancelled";
+        return out;
+    }
+
+    const bool connected = stream.connect(nullptr);
+    const int status = stream.getStatusCode();
+    if (token.isCancelled())
+    {
+        out.error = "Cancelled";
+        return out;
+    }
+    if (!connected || stream.isError())
+    {
+        out.ok =
+            status > 0; // uno stato HTTP di errore (come con createInputStream: nessun corpo per 4xx/5xx)
         out.status = status;
         out.error = "Could not reach GitHub";
         return out;
@@ -297,17 +354,22 @@ FetchOutcome fetchReleases()
     char buffer[4096];
     while (data.getSize() < static_cast<size_t>(kMaxBodyBytes))
     {
-        if (juce::Thread::currentThreadShouldExit())
+        if (juce::Thread::currentThreadShouldExit() || token.isCancelled())
         {
             out.error = "Cancelled";
             return out;
         }
-        const int n = stream->read(buffer, static_cast<int>(sizeof(buffer)));
+        const int n = stream.read(buffer, static_cast<int>(sizeof(buffer)));
         if (n <= 0)
         {
             break;
         }
         data.append(buffer, static_cast<size_t>(n));
+    }
+    if (token.isCancelled()) // una lettura interrotta da cancel() ritorna 0: non è una risposta completa
+    {
+        out.error = "Cancelled";
+        return out;
     }
     out.ok = true;
     out.status = status;
@@ -375,7 +437,7 @@ public:
         {
             if (fetch_)
             {
-                response = fetch_();
+                response = fetch_(token_);
             }
             else
             {
@@ -402,8 +464,12 @@ public:
             });
     }
 
+    // Interrompe la richiesta in corso (da qualunque thread).
+    void cancelRequest() { token_.cancel(); }
+
 private:
     Fetcher fetch_;
+    CancelToken token_;
     juce::String version_;
     juce::WeakReference<UpdateChecker> owner_;
     std::function<void(const UpdateResult&)> callback_;
@@ -416,7 +482,8 @@ UpdateChecker::~UpdateChecker()
     masterReference.clear(); // le callback in attesa sul message thread diventano no-op
     if (worker_ != nullptr)
     {
-        worker_->stopThread(kTimeoutMs + 4000);
+        worker_->cancelRequest(); // interrompe subito la richiesta bloccata, poi aspetta l'uscita
+        worker_->stopThread(kStopWaitMs);
     }
     worker_.reset();
 }
@@ -436,7 +503,8 @@ bool UpdateChecker::check(const juce::String& currentVersion,
     }
     if (worker_ != nullptr)
     {
-        worker_->stopThread(kTimeoutMs + 4000); // già finito: aspetta solo l'uscita del thread
+        worker_->cancelRequest(); // di norma già finito: aspetta solo l'uscita del thread
+        worker_->stopThread(kStopWaitMs);
     }
     worker_.reset();
     worker_ = std::make_unique<Worker>(fetcher_, currentVersion, this, std::move(onResult));

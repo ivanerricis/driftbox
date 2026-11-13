@@ -18,7 +18,7 @@ using namespace driftbox::update;
 
 namespace
 {
-FetchOutcome blockedFetch()
+FetchOutcome blockedFetch(CancelToken&)
 {
     FetchOutcome o;
     o.error = "network disabled in tests";
@@ -384,7 +384,7 @@ TEST_CASE("Checker runs the request in the background and delivers the result to
     std::atomic<int> fetches{0};
     std::atomic<juce::Thread::ThreadID> fetchThread{nullptr};
     UpdateChecker checker(
-        [&]
+        [&](CancelToken&)
         {
             ++fetches;
             fetchThread = juce::Thread::getCurrentThreadId();
@@ -431,7 +431,7 @@ TEST_CASE("Checker reports a failing or throwing fetcher", "[update]")
     bool delivered = false;
     SECTION("failure")
     {
-        UpdateChecker checker([] { return blockedFetch(); });
+        UpdateChecker checker([](CancelToken& t) { return blockedFetch(t); });
         REQUIRE(checker.check("0.1.0",
                               [&](const UpdateResult& r)
                               {
@@ -444,7 +444,7 @@ TEST_CASE("Checker reports a failing or throwing fetcher", "[update]")
     }
     SECTION("exception")
     {
-        UpdateChecker checker([]() -> FetchOutcome { throw std::runtime_error("boom"); });
+        UpdateChecker checker([](CancelToken&) -> FetchOutcome { throw std::runtime_error("boom"); });
         REQUIRE(checker.check("0.1.0",
                               [&](const UpdateResult& r)
                               {
@@ -462,7 +462,7 @@ TEST_CASE("Destroying the checker mid-request never calls back", "[update]")
     bool called = false;
     {
         UpdateChecker checker(
-            [&]
+            [&](CancelToken&)
             {
                 started = true;
                 juce::Thread::sleep(150);
@@ -480,7 +480,7 @@ TEST_CASE("Automatic check is on by default and at most once a day", "[update][s
     std::atomic<int> fetches{0};
     std::atomic<const char*> tag{"v9.0.0"};
     FakeFetcher fake(
-        [&]
+        [&](CancelToken&)
         {
             ++fetches;
             return release(tag.load());
@@ -576,7 +576,7 @@ TEST_CASE("Automatic check is on by default and at most once a day", "[update][s
     }
     SECTION("a failed check is reported")
     {
-        FakeFetcher failing([] { return blockedFetch(); });
+        FakeFetcher failing([](CancelToken& t) { return blockedFetch(t); });
         SettingsManager other(tmp.file);
         CHECK(other.checkForUpdatesNow());
         REQUIRE(waitFor([&] { return other.getUpdateState().phase == Phase::done; }));
@@ -601,7 +601,7 @@ namespace
 // predefiniti.
 struct PanelFixture
 {
-    PanelFixture() : fake([] { return release("v0.1.1"); }), processor(), editor(processor)
+    PanelFixture() : fake([](CancelToken&) { return release("v0.1.1"); }), processor(), editor(processor)
     {
         processor.getSettings().resetToDefaults();
         using Phase = SettingsManager::UpdateState::Phase;
@@ -676,4 +676,44 @@ TEST_CASE("Snapshot: settings modal with an update available", "[gui][update][sn
         }
     }
     CHECK(img.getWidth() == f.editor.getWidth());
+}
+
+TEST_CASE("Destroying the checker aborts a stalled request promptly", "[update]")
+{
+    std::atomic<bool> started{false};
+    std::atomic<bool> cancelled{false};
+    auto checker = std::make_unique<UpdateChecker>(
+        [&](CancelToken& token)
+        {
+            started = true;
+            cancelled = token.waitForCancel(20000); // una richiesta ferma sulla rete: esce solo se annullata
+            FetchOutcome o;
+            o.error = "Cancelled";
+            return o;
+        });
+    REQUIRE(checker->check("0.1.0", [](const UpdateResult&) { FAIL("must not call back"); }));
+    REQUIRE(waitFor([&] { return started.load(); }));
+
+    const auto t0 = juce::Time::getMillisecondCounter();
+    checker.reset();
+    const auto elapsed = juce::Time::getMillisecondCounter() - t0;
+    CHECK(elapsed < 1000);
+    CHECK(cancelled.load());
+    pump(50);
+}
+
+TEST_CASE("Cancel token cancels the attached stream and any later one", "[update]")
+{
+    CancelToken token;
+    CHECK_FALSE(token.isCancelled());
+    CHECK_FALSE(token.waitForCancel(1));
+    juce::WebInputStream first(juce::URL("http://127.0.0.1:9/"), false);
+    CHECK(token.attach(&first));
+    token.cancel();
+    token.detach();
+    CHECK(token.isCancelled());
+    CHECK(token.waitForCancel(1));
+    juce::WebInputStream second(juce::URL("http://127.0.0.1:9/"), false);
+    CHECK_FALSE(token.attach(&second)); // nato dopo l'annullamento: rifiutato (e annullato)
+    CHECK_FALSE(second.connect(nullptr));
 }
